@@ -1,0 +1,15 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": { "name": "square" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [[0, 0], [4, 0], [4, 4], [0, 4], [0, 0]]
+        ]
+      }
+    }
+  ]
+}

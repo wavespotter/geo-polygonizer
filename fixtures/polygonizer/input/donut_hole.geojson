@@ -1,0 +1,14 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    { "type": "Feature", "properties": { "name": "outer bottom" }, "geometry": { "type": "LineString", "coordinates": [[0, 0], [10, 0]] } },
+    { "type": "Feature", "properties": { "name": "outer right" }, "geometry": { "type": "LineString", "coordinates": [[10, 0], [10, 10]] } },
+    { "type": "Feature", "properties": { "name": "outer top" }, "geometry": { "type": "LineString", "coordinates": [[10, 10], [0, 10]] } },
+    { "type": "Feature", "properties": { "name": "outer left" }, "geometry": { "type": "LineString", "coordinates": [[0, 10], [0, 0]] } },
+
+    { "type": "Feature", "properties": { "name": "inner bottom" }, "geometry": { "type": "LineString", "coordinates": [[3, 3], [7, 3]] } },
+    { "type": "Feature", "properties": { "name": "inner right" }, "geometry": { "type": "LineString", "coordinates": [[7, 3], [7, 7]] } },
+    { "type": "Feature", "properties": { "name": "inner top" }, "geometry": { "type": "LineString", "coordinates": [[7, 7], [3, 7]] } },
+    { "type": "Feature", "properties": { "name": "inner left" }, "geometry": { "type": "LineString", "coordinates": [[3, 7], [3, 3]] } }
+  ]
+}

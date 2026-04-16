@@ -1,0 +1,15 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": { "name": "rectangle from collinear noding" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [[0, 0], [6, 0], [6, 4], [0, 4], [0, 0]]
+        ]
+      }
+    }
+  ]
+}

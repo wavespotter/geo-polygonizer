@@ -1,0 +1,19 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    { "type": "Feature", "properties": { "name": "outer bottom" }, "geometry": { "type": "LineString", "coordinates": [[0, 0], [12, 0]] } },
+    { "type": "Feature", "properties": { "name": "outer right" }, "geometry": { "type": "LineString", "coordinates": [[12, 0], [12, 12]] } },
+    { "type": "Feature", "properties": { "name": "outer top" }, "geometry": { "type": "LineString", "coordinates": [[12, 12], [0, 12]] } },
+    { "type": "Feature", "properties": { "name": "outer left" }, "geometry": { "type": "LineString", "coordinates": [[0, 12], [0, 0]] } },
+
+    { "type": "Feature", "properties": { "name": "middle bottom" }, "geometry": { "type": "LineString", "coordinates": [[3, 3], [9, 3]] } },
+    { "type": "Feature", "properties": { "name": "middle right" }, "geometry": { "type": "LineString", "coordinates": [[9, 3], [9, 9]] } },
+    { "type": "Feature", "properties": { "name": "middle top" }, "geometry": { "type": "LineString", "coordinates": [[9, 9], [3, 9]] } },
+    { "type": "Feature", "properties": { "name": "middle left" }, "geometry": { "type": "LineString", "coordinates": [[3, 9], [3, 3]] } },
+
+    { "type": "Feature", "properties": { "name": "inner bottom" }, "geometry": { "type": "LineString", "coordinates": [[5, 5], [7, 5]] } },
+    { "type": "Feature", "properties": { "name": "inner right" }, "geometry": { "type": "LineString", "coordinates": [[7, 5], [7, 7]] } },
+    { "type": "Feature", "properties": { "name": "inner top" }, "geometry": { "type": "LineString", "coordinates": [[7, 7], [5, 7]] } },
+    { "type": "Feature", "properties": { "name": "inner left" }, "geometry": { "type": "LineString", "coordinates": [[5, 7], [5, 5]] } }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": { "name": "left square" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [[0, 0], [2, 0], [2, 2], [0, 2], [0, 0]]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "name": "right square" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [[4, 0], [6, 0], [6, 2], [4, 2], [4, 0]]
+        ]
+      }
+    }
+  ]
+}

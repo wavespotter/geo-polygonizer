@@ -1,0 +1,26 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": { "name": "donut" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]],
+          [[3, 3], [3, 7], [7, 7], [7, 3], [3, 3]]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "name": "inner standalone polygon" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [[3, 3], [7, 3], [7, 7], [3, 7], [3, 3]]
+        ]
+      }
+    }
+  ]
+}

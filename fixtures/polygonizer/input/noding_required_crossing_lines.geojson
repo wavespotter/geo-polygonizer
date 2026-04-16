@@ -1,0 +1,9 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    { "type": "Feature", "properties": { "name": "bottom extended" }, "geometry": { "type": "LineString", "coordinates": [[-1, 0], [5, 0]] } },
+    { "type": "Feature", "properties": { "name": "right extended" }, "geometry": { "type": "LineString", "coordinates": [[4, -1], [4, 5]] } },
+    { "type": "Feature", "properties": { "name": "top extended" }, "geometry": { "type": "LineString", "coordinates": [[5, 4], [-1, 4]] } },
+    { "type": "Feature", "properties": { "name": "left extended" }, "geometry": { "type": "LineString", "coordinates": [[0, 5], [0, -1]] } }
+  ]
+}

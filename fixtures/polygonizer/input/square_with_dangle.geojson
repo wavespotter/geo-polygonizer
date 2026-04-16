@@ -1,0 +1,10 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    { "type": "Feature", "properties": { "name": "bottom" }, "geometry": { "type": "LineString", "coordinates": [[0, 0], [4, 0]] } },
+    { "type": "Feature", "properties": { "name": "right" }, "geometry": { "type": "LineString", "coordinates": [[4, 0], [4, 4]] } },
+    { "type": "Feature", "properties": { "name": "top" }, "geometry": { "type": "LineString", "coordinates": [[4, 4], [0, 4]] } },
+    { "type": "Feature", "properties": { "name": "left" }, "geometry": { "type": "LineString", "coordinates": [[0, 4], [0, 0]] } },
+    { "type": "Feature", "properties": { "name": "dangling spur" }, "geometry": { "type": "LineString", "coordinates": [[4, 4], [6, 6]] } }
+  ]
+}

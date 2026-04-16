@@ -1,4 +1,4 @@
-use geo::{Line, MultiPolygon, GeoFloat};
+use geo::{GeoFloat, Line, MultiPolygon};
 
 mod graph;
 use graph::PolygonizerGraph;

@@ -1,0 +1,18 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    { "type": "Feature", "properties": { "name": "A bottom" }, "geometry": { "type": "LineString", "coordinates": [[0, 0], [4, 0]] } },
+    { "type": "Feature", "properties": { "name": "A right lower" }, "geometry": { "type": "LineString", "coordinates": [[4, 0], [4, 2]] } },
+    { "type": "Feature", "properties": { "name": "A right upper" }, "geometry": { "type": "LineString", "coordinates": [[4, 2], [4, 4]] } },
+    { "type": "Feature", "properties": { "name": "A top right" }, "geometry": { "type": "LineString", "coordinates": [[4, 4], [2, 4]] } },
+    { "type": "Feature", "properties": { "name": "A top left" }, "geometry": { "type": "LineString", "coordinates": [[2, 4], [0, 4]] } },
+    { "type": "Feature", "properties": { "name": "A left" }, "geometry": { "type": "LineString", "coordinates": [[0, 4], [0, 0]] } },
+
+    { "type": "Feature", "properties": { "name": "B bottom left" }, "geometry": { "type": "LineString", "coordinates": [[2, 2], [4, 2]] } },
+    { "type": "Feature", "properties": { "name": "B bottom right" }, "geometry": { "type": "LineString", "coordinates": [[4, 2], [6, 2]] } },
+    { "type": "Feature", "properties": { "name": "B right" }, "geometry": { "type": "LineString", "coordinates": [[6, 2], [6, 6]] } },
+    { "type": "Feature", "properties": { "name": "B top" }, "geometry": { "type": "LineString", "coordinates": [[6, 6], [2, 6]] } },
+    { "type": "Feature", "properties": { "name": "B left upper" }, "geometry": { "type": "LineString", "coordinates": [[2, 6], [2, 4]] } },
+    { "type": "Feature", "properties": { "name": "B left lower" }, "geometry": { "type": "LineString", "coordinates": [[2, 4], [2, 2]] } }
+  ]
+}

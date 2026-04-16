@@ -1,18 +1,13 @@
 use std::cmp::Ordering;
-use std::iter::{FilterMap, Flatten, Map};
 use std::collections::{BTreeMap, BTreeSet, btree_map, btree_set};
+use std::iter::{FilterMap, Flatten, Map};
 
+use geo::Winding;
 use geo::orient::Direction;
-use geo::{GeoFloat, Line, LineString, LinesIter, MultiPolygon, Orient, Polygon, Validation, Winding, coord};
+use geo::{
+    GeoFloat, Line, LineString, LinesIter, MultiPolygon, Orient, Polygon, Validation, coord,
+};
 use rstar::{Envelope, RTreeObject};
-
-#[derive(PartialOrd, Ord, PartialEq, Eq)]
-enum Quadrant {
-    NE = 0,
-    NW = 1,
-    SW = 2,
-    SE = 3,
-}
 
 #[derive(Copy, Clone, Debug)]
 pub(crate) struct Node<T: GeoFloat> {
@@ -59,23 +54,33 @@ impl<T: GeoFloat> Ord for Edge<T> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         match self.from.cmp(&other.from) {
             Ordering::Equal => {
-                match self.quadrant().cmp(&other.quadrant()) {
+                let self_dx = self.to.x - self.from.x;
+                let self_dy = self.to.y - self.from.y;
+                let other_dx = other.to.x - other.from.x;
+                let other_dy = other.to.y - other.from.y;
+
+                let self_is_upper_half =
+                    self_dy > T::zero() || (self_dy == T::zero() && self_dx >= T::zero());
+                let other_is_upper_half =
+                    other_dy > T::zero() || (other_dy == T::zero() && other_dx >= T::zero());
+
+                match self_is_upper_half.cmp(&other_is_upper_half).reverse() {
                     Ordering::Less => Ordering::Less,
                     Ordering::Greater => Ordering::Greater,
                     Ordering::Equal => {
-                        let dx1 = self.to.x - self.from.x;
-                        let dy1 = self.to.y - self.from.y;
-                        let dx2 = other.to.x - other.from.x;
-                        let dy2 = other.to.y - other.from.y;
-
-                        let cross_cmp = (dx1 * dy2 - dx2 * dy1).total_cmp(&T::zero());
-                        if cross_cmp != Ordering::Equal {
-                            return cross_cmp;
+                        let cross_product = self_dx * other_dy - self_dy * other_dx;
+                        if cross_product > T::zero() {
+                            return Ordering::Less;
+                        }
+                        if cross_product < T::zero() {
+                            return Ordering::Greater;
                         }
 
-                        let len1 = dx1 * dx1 + dy1 * dy1;
-                        let len2 = dx2 * dx2 + dy2 * dy2;
-                        len1.total_cmp(&len2).then(self.to.cmp(&other.to))
+                        let self_length_squared = self_dx * self_dx + self_dy * self_dy;
+                        let other_length_squared = other_dx * other_dx + other_dy * other_dy;
+                        self_length_squared
+                            .total_cmp(&other_length_squared)
+                            .then(self.to.cmp(&other.to))
                     }
                 }
             }
@@ -85,20 +90,11 @@ impl<T: GeoFloat> Ord for Edge<T> {
 }
 
 impl<T: GeoFloat> Edge<T> {
-    fn quadrant(&self) -> Quadrant {
-        let dx = self.to.x - self.from.x;
-        let dy = self.to.y - self.from.y;
-
-        match (dx >= T::zero(), dy >= T::zero()) {
-            (true, true) => Quadrant::NE,
-            (true, false) => Quadrant::SE,
-            (false, true) => Quadrant::NW,
-            (false, false) => Quadrant::SW,
-        }
-    }
-
     fn get_symmetrical(&self) -> Self {
-        Edge { from: self.to, to: self.from }
+        Edge {
+            from: self.to,
+            to: self.from,
+        }
     }
 }
 
@@ -108,205 +104,90 @@ pub(crate) struct PolygonizerGraph<T: GeoFloat> {
 }
 
 impl<T: GeoFloat> PolygonizerGraph<T> {
+    /// For each directed edge (u -> v), returns the next directed edge along
+    /// the face on its left side when traversing the planar graph.
+    fn get_edge_to_next_left_face_edge_map(&self) -> BTreeMap<Edge<T>, Edge<T>> {
+        let mut next_left_face_edge_by_edge = BTreeMap::new();
+
+        for outbound_edges_at_node in self.nodes_to_outbound_edges.values() {
+            let outbound_edges: Vec<_> = outbound_edges_at_node.iter().collect();
+            let edge_count = outbound_edges.len();
+            if edge_count == 0 {
+                continue;
+            }
+
+            for edge_index in 0..edge_count {
+                let reverse_edge = *outbound_edges[edge_index];
+                let incoming_edge = reverse_edge.get_symmetrical();
+                let next_outgoing_edge =
+                    *outbound_edges[(edge_index + edge_count - 1) % edge_count];
+                next_left_face_edge_by_edge.insert(incoming_edge, next_outgoing_edge);
+            }
+        }
+
+        next_left_face_edge_by_edge
+    }
+
     pub(crate) fn from_noded_lines(lines: impl IntoIterator<Item = Line<T>>) -> Self {
         let mut nodes_to_outbound_edges = BTreeMap::new();
 
         for line in lines.into_iter() {
-            let node1 = Node { x: line.start.x, y: line.start.y };
-            let node2 = Node { x: line.end.x, y: line.end.y };
-
-            nodes_to_outbound_edges
-                .entry(node1)
-                .or_insert_with(|| BTreeSet::new())
-                .insert(Edge { from: node1, to: node2 });
-            nodes_to_outbound_edges
-                .entry(node2)
-                .or_insert_with(|| BTreeSet::new())
-                .insert(Edge { from: node2, to: node1 });
-        }
-
-        Self { nodes_to_outbound_edges }
-    }
-
-    /// For each directed edge (from → to) in the graph, returns a map to the
-    /// next outbound edge from `from` in clockwise order (wrapping cyclically).
-    fn get_edge_to_next_cw_edge_map(&self) -> BTreeMap<Edge<T>, Edge<T>> {
-        let mut map = BTreeMap::new();
-        for (_node, edges) in &self.nodes_to_outbound_edges {
-            let edges_vec: Vec<_> = edges.iter().collect();
-            let n = edges_vec.len();
-            for i in 0..n {
-                let current_edge = edges_vec[i];
-                let prev_edge = edges_vec[(i + n - 1) % n];
-                map.insert(*current_edge, prev_edge.get_symmetrical());
-            }
-        }
-        map
-    }
-
-    /// Labels all edges by which maximal ring they belong to, and returns the
-    /// start edge for each ring (one entry per distinct ring label).
-    fn label_edges_by_ring(&self, edge_map: &BTreeMap<Edge<T>, Edge<T>>) -> (BTreeMap<Edge<T>, usize>, Vec<Edge<T>>) {
-        let mut labels: BTreeMap<Edge<T>, usize> = BTreeMap::new();
-        let mut ring_starts: Vec<Edge<T>> = Vec::new();
-        let mut label: usize = 0;
-        for edge in edge_map.keys() {
-            if labels.contains_key(edge) {
-                continue;
-            }
-
-            ring_starts.push(*edge);
-            labels.insert(*edge, label);
-            let mut next = *edge;
-            loop {
-                next = match edge_map.get(&next) {
-                    Some(next) => *next,
-                    _ => break
-                };
-                if next == *edge {
-                    break;
-                }
-                if labels.contains_key(&next) {
-                    break;
-                }
-                labels.insert(next, label);
-            }
-            label += 1;
-        }
-        (labels, ring_starts)
-    }
-
-    /// Converts the maximal edge ring map (CW traversal) into a minimal edge ring map.
-    ///
-    /// Mirrors JTS `convertMaximalToMinimalEdgeRings`: for each maximal ring, traverse
-    /// it to find "intersection nodes" (nodes where that ring has degree > 1), then
-    /// rewire only those nodes for that ring's label. This avoids incorrectly rewiring
-    /// nodes that are only visited once per ring.
-    fn convert_maximal_to_minimal_edge_rings(
-        &self,
-        edge_map: &BTreeMap<Edge<T>, Edge<T>>,
-        ring_labeling: &BTreeMap<Edge<T>, usize>,
-        ring_starts: &[Edge<T>],
-    ) -> BTreeMap<Edge<T>, Edge<T>> {
-        let mut map = edge_map.clone();
-
-        for &start_edge in ring_starts {
-            let label = match ring_labeling.get(&start_edge) {
-                Some(&l) => l,
-                None => continue,
+            let start_node = Node {
+                x: line.start.x,
+                y: line.start.y,
+            };
+            let end_node = Node {
+                x: line.end.x,
+                y: line.end.y,
             };
 
-            // Traverse this maximal ring via CW pointers to find intersection nodes:
-            // nodes where the ring's label has degree > 1 (i.e. the ring visits the
-            // node more than once, meaning the maximal ring self-intersects there).
-            let mut intersection_nodes: Vec<Node<T>> = Vec::new();
-            let mut cur = start_edge;
-            loop {
-                let node = cur.from;
-                // Count how many edges at this node belong to this ring label
-                // (both outgoing and incoming directions).
-                // Count only outgoing edges at this node that carry this ring's label.
-                // This mirrors JTS `getDegree(node, label)`, which counts only outgoing
-                // directed edges. A node has degree > 1 only when the ring visits it more
-                // than once (i.e., the maximal ring self-intersects there). Counting
-                // incoming edges too would make every normal traversal node look like an
-                // intersection (outgoing 1 + incoming 1 = 2) and cause all nodes to be
-                // spuriously rewired.
-                let degree = self.nodes_to_outbound_edges
-                    .get(&node)
-                    .map(|edges| edges.iter().filter(|e| {
-                        ring_labeling.get(*e) == Some(&label)
-                    }).count())
-                    .unwrap_or(0);
-                if degree > 1 {
-                    intersection_nodes.push(node);
-                }
-                cur = match edge_map.get(&cur) {
-                    Some(&next) => next,
-                    None => break,
-                };
-                if cur == start_edge {
-                    break;
-                }
-            }
-
-            // Rewire the next-pointers at each intersection node for this ring label,
-            // turning the maximal ring into minimal rings (CCW traversal order).
-            for node in intersection_nodes {
-                let edges = match self.nodes_to_outbound_edges.get(&node) {
-                    Some(e) => e,
-                    None => continue,
-                };
-                let edges_vec: Vec<&Edge<T>> = edges.iter().collect();
-                let n = edges_vec.len();
-
-                let mut first_out_edge: Option<Edge<T>> = None;
-                let mut prev_in_edge: Option<Edge<T>> = None;
-
-                // Iterate in reverse (CW) order — same as JTS iterating CW around the star.
-                for i in (0..n).rev() {
-                    let edge = edges_vec[i];
-                    let symmetrical = edge.get_symmetrical();
-
-                    let out_edge = if ring_labeling.get(edge) == Some(&label) { Some(*edge) } else { None };
-                    let in_edge = if ring_labeling.get(&symmetrical) == Some(&label) { Some(symmetrical) } else { None };
-
-                    if out_edge.is_none() && in_edge.is_none() {
-                        continue;
-                    }
-
-                    if let Some(in_edge) = in_edge {
-                        prev_in_edge = Some(in_edge);
-                    }
-
-                    if let Some(out_edge) = out_edge {
-                        if let Some(prev_in) = prev_in_edge.take() {
-                            map.insert(prev_in, out_edge);
-                        }
-                        if first_out_edge.is_none() {
-                            first_out_edge = Some(out_edge);
-                        }
-                    }
-                }
-
-                // Wrap-around: connect the last unmatched in_edge to the first out_edge.
-                if let (Some(prev_in), Some(first_out)) = (prev_in_edge, first_out_edge) {
-                    map.insert(prev_in, first_out);
-                }
-            }
+            nodes_to_outbound_edges
+                .entry(start_node)
+                .or_insert_with(|| BTreeSet::new())
+                .insert(Edge {
+                    from: start_node,
+                    to: end_node,
+                });
+            nodes_to_outbound_edges
+                .entry(end_node)
+                .or_insert_with(|| BTreeSet::new())
+                .insert(Edge {
+                    from: end_node,
+                    to: start_node,
+                });
         }
 
-        map
+        Self {
+            nodes_to_outbound_edges,
+        }
     }
 
     fn get_minimal_edge_rings(&self) -> Vec<Vec<Edge<T>>> {
-        let cw_map = self.get_edge_to_next_cw_edge_map();
-        let (ring_labels, ring_starts) = self.label_edges_by_ring(&cw_map);
-        let minimal_map = self.convert_maximal_to_minimal_edge_rings(&cw_map, &ring_labels, &ring_starts);
+        let next_left_face_edge_by_edge = self.get_edge_to_next_left_face_edge_map();
 
         let mut rings = Vec::new();
-        let mut is_in_ring = BTreeSet::new();
-        for edge in minimal_map.keys() {
-            if is_in_ring.contains(edge) {
+        let mut visited_directed_edges = BTreeSet::new();
+        for edge in next_left_face_edge_by_edge.keys() {
+            if visited_directed_edges.contains(edge) {
                 continue;
             }
 
             let mut ring = vec![*edge];
-            is_in_ring.insert(*edge);
-            let mut next = *edge;
+            visited_directed_edges.insert(*edge);
+            let mut next_edge = *edge;
             loop {
-                next = match minimal_map.get(&next) {
+                next_edge = match next_left_face_edge_by_edge.get(&next_edge) {
                     Some(next) => *next,
-                    _ => break
+                    _ => break,
                 };
-                if next == *edge {
+                if next_edge == *edge {
                     break;
                 }
-                if is_in_ring.contains(&next) {
+                if visited_directed_edges.contains(&next_edge) {
                     break;
                 }
-                ring.push(next);
-                is_in_ring.insert(next);
+                ring.push(next_edge);
+                visited_directed_edges.insert(next_edge);
             }
             rings.push(ring);
         }
@@ -314,35 +195,37 @@ impl<T: GeoFloat> PolygonizerGraph<T> {
     }
 
     pub(crate) fn delete_dangles(&mut self) {
-        let mut degree_one_nodes: Vec<_> = self.nodes_to_outbound_edges.iter().filter_map(|(node, edges)| {
-            if edges.len() == 1 {
-                Some(*node)
-            } else {
-                None
-            }
-        }).collect();
+        let mut degree_one_nodes: Vec<_> = self
+            .nodes_to_outbound_edges
+            .iter()
+            .filter_map(
+                |(node, edges)| {
+                    if edges.len() == 1 { Some(*node) } else { None }
+                },
+            )
+            .collect();
 
         loop {
             let source_node = match degree_one_nodes.pop() {
                 Some(node) => node,
-                _ => break
+                _ => break,
             };
 
             let mut source_edge_list = match self.nodes_to_outbound_edges.remove(&source_node) {
                 Some(source_edge_list) => source_edge_list,
-                _ => continue
+                _ => continue,
             };
 
             let source_edge = match source_edge_list.pop_last() {
                 Some(source_edge) => source_edge,
-                _ => continue
+                _ => continue,
             };
 
             // remove the symmetric edge
             let dest_node = source_edge.to;
             let dest_edge_list = match self.nodes_to_outbound_edges.get_mut(&dest_node) {
                 Some(dest_edge_list) => dest_edge_list,
-                _ => continue
+                _ => continue,
             };
             dest_edge_list.remove(&source_edge.get_symmetrical());
 
@@ -354,35 +237,152 @@ impl<T: GeoFloat> PolygonizerGraph<T> {
     }
 
     pub(crate) fn delete_cut_edges(&mut self) {
-        let cw_map = self.get_edge_to_next_cw_edge_map();
-        let (ring_labels, _) = self.label_edges_by_ring(&cw_map);
-        for (edge, label) in ring_labels.iter() {
-            if ring_labels.get(&edge.get_symmetrical()) == Some(label) {
-                self.nodes_to_outbound_edges.get_mut(&edge.from).map(|edges| edges.remove(edge));
-                self.nodes_to_outbound_edges.get_mut(&edge.to).map(|edges| edges.remove(&edge.get_symmetrical()));
+        let mut edge_to_index: BTreeMap<Edge<T>, usize> = BTreeMap::new();
+        let mut edges_by_index: Vec<Edge<T>> = Vec::new();
+
+        for outbound_edges_at_node in self.nodes_to_outbound_edges.values() {
+            for edge in outbound_edges_at_node {
+                if !edge_to_index.contains_key(edge) {
+                    let edge_index = edges_by_index.len();
+                    edges_by_index.push(*edge);
+                    edge_to_index.insert(*edge, edge_index);
+                }
             }
         }
+
+        let mut next_left_face_edge_index_by_edge_index: Vec<Option<usize>> =
+            vec![None; edges_by_index.len()];
+
+        for outbound_edges_at_node in self.nodes_to_outbound_edges.values() {
+            let ordered_outgoing_edges: Vec<_> = outbound_edges_at_node.iter().collect();
+            let edge_count = ordered_outgoing_edges.len();
+            if edge_count == 0 {
+                continue;
+            }
+
+            for edge_index in 0..edge_count {
+                let reverse_edge = *ordered_outgoing_edges[edge_index];
+                let incoming_edge = reverse_edge.get_symmetrical();
+                let next_outgoing_edge =
+                    *ordered_outgoing_edges[(edge_index + edge_count - 1) % edge_count];
+
+                let incoming_edge_index = *edge_to_index
+                    .get(&incoming_edge)
+                    .expect("incoming edge index should exist");
+                let next_outgoing_edge_index = *edge_to_index
+                    .get(&next_outgoing_edge)
+                    .expect("next outgoing edge index should exist");
+
+                next_left_face_edge_index_by_edge_index[incoming_edge_index] =
+                    Some(next_outgoing_edge_index);
+            }
+        }
+
+        let mut face_label_by_edge_index: Vec<Option<usize>> = vec![None; edges_by_index.len()];
+        let mut next_face_label = 0usize;
+
+        for start_edge_index in 0..edges_by_index.len() {
+            if face_label_by_edge_index[start_edge_index].is_some() {
+                continue;
+            }
+
+            let mut traversal_path: Vec<usize> = Vec::new();
+            let mut visit_position_by_edge_index: BTreeMap<usize, usize> = BTreeMap::new();
+            let mut current_edge_index = start_edge_index;
+
+            loop {
+                if let Some(existing_face_label) = face_label_by_edge_index[current_edge_index] {
+                    for traversed_edge_index in traversal_path {
+                        face_label_by_edge_index[traversed_edge_index] = Some(existing_face_label);
+                    }
+                    break;
+                }
+
+                if let Some(&cycle_start_position) =
+                    visit_position_by_edge_index.get(&current_edge_index)
+                {
+                    let face_label = next_face_label;
+                    next_face_label += 1;
+
+                    for &traversed_edge_index in &traversal_path[cycle_start_position..] {
+                        face_label_by_edge_index[traversed_edge_index] = Some(face_label);
+                    }
+                    for &traversed_edge_index in &traversal_path[..cycle_start_position] {
+                        face_label_by_edge_index[traversed_edge_index] = Some(face_label);
+                    }
+                    break;
+                }
+
+                visit_position_by_edge_index.insert(current_edge_index, traversal_path.len());
+                traversal_path.push(current_edge_index);
+
+                current_edge_index =
+                    match next_left_face_edge_index_by_edge_index[current_edge_index] {
+                        Some(next_edge_index) => next_edge_index,
+                        None => break,
+                    };
+            }
+        }
+
+        let mut undirected_edges_to_remove: BTreeSet<(Node<T>, Node<T>)> = BTreeSet::new();
+        for (edge_index, edge) in edges_by_index.iter().enumerate() {
+            if edge.from > edge.to {
+                continue;
+            }
+
+            let symmetric_edge_index = *edge_to_index
+                .get(&edge.get_symmetrical())
+                .expect("symmetric edge index should exist");
+
+            if face_label_by_edge_index[edge_index]
+                == face_label_by_edge_index[symmetric_edge_index]
+            {
+                undirected_edges_to_remove.insert((edge.from, edge.to));
+            }
+        }
+
+        self.nodes_to_outbound_edges
+            .retain(|_, outbound_edges_at_node| {
+                outbound_edges_at_node.retain(|edge| {
+                    let undirected_edge = if edge.from <= edge.to {
+                        (edge.from, edge.to)
+                    } else {
+                        (edge.to, edge.from)
+                    };
+                    !undirected_edges_to_remove.contains(&undirected_edge)
+                });
+                !outbound_edges_at_node.is_empty()
+            });
     }
 
     pub(crate) fn polygonize(&self) -> MultiPolygon<T> {
         let edge_rings = self.get_minimal_edge_rings();
 
-        let (valid_holes, valid_shells): (Vec<_>, Vec<_>) = edge_rings.into_iter().filter_map(|ring| {
-            if ring.len() < 3 {
-                return None;
-            }
+        let valid_rings: Vec<_> = edge_rings
+            .into_iter()
+            .filter_map(|ring| {
+                if ring.len() < 3 {
+                    return None;
+                }
 
-            let mut linestring: LineString<T> = ring.iter().map(|edge| coord! { x: edge.from.x, y: edge.from.y }).collect();
-            linestring.close();
-            let polygon = Polygon::new(linestring, Default::default());
-            if !polygon.is_valid() {
-                return None;
-            }
+                let mut linestring: LineString<T> = ring
+                    .iter()
+                    .map(|edge| coord! { x: edge.from.x, y: edge.from.y })
+                    .collect();
+                linestring.close();
+                let polygon = Polygon::new(linestring, Default::default());
+                if !polygon.is_valid() {
+                    return None;
+                }
 
-            // get the linestring back out to return it
-            let (linestring, _) = polygon.into_inner();
-            Some(linestring)
-        }).partition(|linestring| linestring.is_ccw());
+                // get the linestring back out to return it
+                let (linestring, _) = polygon.into_inner();
+                Some(linestring)
+            })
+            .collect();
+
+        let (valid_holes, valid_shells): (Vec<_>, Vec<_>) =
+            valid_rings.into_iter().partition(|ring| ring.is_ccw());
 
         MultiPolygon(assign_shells_to_holes(valid_shells, valid_holes))
     }
@@ -391,26 +391,33 @@ impl<T: GeoFloat> PolygonizerGraph<T> {
 type EdgeToLine<'a, T> = fn(&'a Edge<T>) -> Option<Line<T>>;
 type EdgeFilterMap<'a, T> = FilterMap<btree_set::Iter<'a, Edge<T>>, EdgeToLine<'a, T>>;
 type NodeToEdges<'a, T> = fn((&'a Node<T>, &'a BTreeSet<Edge<T>>)) -> EdgeFilterMap<'a, T>;
-type PolygonizerGraphLinesIter<'a, T> = Flatten<Map<btree_map::Iter<'a, Node<T>, BTreeSet<Edge<T>>>, NodeToEdges<'a, T>>>;
+type PolygonizerGraphLinesIter<'a, T> =
+    Flatten<Map<btree_map::Iter<'a, Node<T>, BTreeSet<Edge<T>>>, NodeToEdges<'a, T>>>;
 
 impl<'a, T: GeoFloat + 'a> LinesIter<'a> for PolygonizerGraph<T> {
     type Scalar = T;
     type Iter = PolygonizerGraphLinesIter<'a, T>;
 
     fn lines_iter(&'a self) -> Self::Iter {
-        self.nodes_to_outbound_edges.iter().map(
-            (|(_, edges)| {
-                edges.iter().filter_map(
-                    (|edge| {
-                        if edge.from < edge.to {
-                            Some(Line::new(coord! { x: edge.from.x, y: edge.from.y }, coord! { x: edge.to.x, y: edge.to.y }))
-                        } else {
-                            None
-                        }
-                    }) as EdgeToLine<T>
-                )
-            }) as NodeToEdges<T>
-        ).flatten()
+        self.nodes_to_outbound_edges
+            .iter()
+            .map(
+                (|(_, edges)| {
+                    edges.iter().filter_map(
+                        (|edge| {
+                            if edge.from < edge.to {
+                                Some(Line::new(
+                                    coord! { x: edge.from.x, y: edge.from.y },
+                                    coord! { x: edge.to.x, y: edge.to.y },
+                                ))
+                            } else {
+                                None
+                            }
+                        }) as EdgeToLine<T>,
+                    )
+                }) as NodeToEdges<T>,
+            )
+            .flatten()
     }
 }
 
@@ -427,33 +434,76 @@ impl<T: GeoFloat + rstar::RTreeNum> rstar::RTreeObject for ShellContainer<T> {
     }
 }
 
-fn assign_shells_to_holes<T: GeoFloat + rstar::RTreeNum>(shells: Vec<LineString<T>>, holes: Vec<LineString<T>>) -> Vec<Polygon<T>> {
-    let shell_containers = shells.iter().enumerate().map(|(idx, shell)| ShellContainer { idx, envelope: shell.envelope() }).collect();
+fn assign_shells_to_holes<T: GeoFloat + rstar::RTreeNum>(
+    shells: Vec<LineString<T>>,
+    holes: Vec<LineString<T>>,
+) -> Vec<Polygon<T>> {
+    let shell_containers = shells
+        .iter()
+        .enumerate()
+        .map(|(idx, shell)| ShellContainer {
+            idx,
+            envelope: shell.envelope(),
+        })
+        .collect();
     let shell_tree = rstar::RTree::bulk_load(shell_containers);
 
     let mut assignments: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
 
-    for (i, hole) in holes.iter().enumerate() {
+    for (hole_index, hole) in holes.iter().enumerate() {
         let hole_envelope = hole.envelope();
-        let mut matching: Vec<_> = shell_tree.locate_in_envelope_intersecting(&hole.envelope()).filter(|container| container.envelope.contains_envelope(&hole_envelope) && container.envelope != hole_envelope).collect();
-        matching.sort_by(|c1, c2| c1.envelope.area().total_cmp(&c2.envelope.area()));
+        let mut matching_shells: Vec<_> = shell_tree
+            .locate_in_envelope_intersecting(&hole.envelope())
+            .filter(|container| {
+                container.envelope.contains_envelope(&hole_envelope)
+                    && container.envelope != hole_envelope
+            })
+            .collect();
+        matching_shells.sort_by(|left_shell, right_shell| {
+            left_shell
+                .envelope
+                .area()
+                .total_cmp(&right_shell.envelope.area())
+        });
 
-        if let Some(container) = matching.first() {
+        if let Some(container) = matching_shells.first() {
             assignments
                 .entry(container.idx)
                 .or_insert_with(|| Vec::new())
-                .push(i);
+                .push(hole_index);
         }
     }
 
-    shells.into_iter().enumerate().map(|(i, shell)| {
-        let polygon = Polygon::new(
-            shell,
-            match assignments.get(&i) {
-                Some(assignments) => assignments.iter().map(|j| holes[*j].clone()).collect(),
-                None => vec![]
-            }
-        );
-        polygon.orient(Direction::Default)
-    }).collect()
+    let assigned_hole_indices: BTreeSet<usize> = assignments
+        .values()
+        .flat_map(|hole_indices| hole_indices.iter().copied())
+        .collect();
+
+    let mut polygons: Vec<Polygon<T>> = shells
+        .into_iter()
+        .enumerate()
+        .map(|(shell_index, shell)| {
+            let polygon = Polygon::new(
+                shell,
+                match assignments.get(&shell_index) {
+                    Some(assigned_hole_indices) => assigned_hole_indices
+                        .iter()
+                        .map(|hole_index| holes[*hole_index].clone())
+                        .collect(),
+                    None => vec![],
+                },
+            );
+            polygon.orient(Direction::Default)
+        })
+        .collect();
+
+    for hole_index in assigned_hole_indices {
+        let standalone_hole_polygon =
+            Polygon::new(holes[hole_index].clone(), vec![]).orient(Direction::Default);
+        if !polygons.contains(&standalone_hole_polygon) {
+            polygons.push(standalone_hole_polygon);
+        }
+    }
+
+    polygons
 }

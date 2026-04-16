@@ -1,7 +1,5 @@
 use geo::{
-    Coord, GeoFloat, Line,
-    algorithm::sweep::Intersections,
-    line_intersection::LineIntersection,
+    Coord, GeoFloat, Line, algorithm::sweep::Intersections, line_intersection::LineIntersection,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -130,7 +128,9 @@ pub fn nodify_lines<T: GeoFloat>(
     let mut out: BTreeSet<(QCoord, QCoord)> = BTreeSet::new();
 
     for tl in &tagged {
-        let Some(pts) = cuts.get(&tl.idx) else { continue };
+        let Some(pts) = cuts.get(&tl.idx) else {
+            continue;
+        };
 
         let mut pts: Vec<Coord<T>> = pts.iter().map(|&q| quantizer.unqcoord(q)).collect();
 
