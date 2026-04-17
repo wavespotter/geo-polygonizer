@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use geo::{Line, LinesIter, MultiPolygon, Polygon};
+use geo::{Line, LinesIter, MultiPolygon, Polygon, Validation};
 use geojson::GeometryValue;
 
 use super::*;
@@ -381,4 +381,50 @@ fn polygonize_venn_overlaps_split_into_distinct_regions() {
         1e-9,
         "output_nodify",
     );
+}
+
+#[test]
+fn debug_invalid_polygon() {
+    let lines = load_input_lines("buggy_outlines");
+    let polygons = polygonize(lines.into_iter());
+    assert!(polygons.0.iter().all(|poly| poly.is_valid()));
+}
+
+#[test]
+fn polygonize_filters_invalid_polygon_from_touching_hole_assignment() {
+    fn ring_lines(points: &[(f64, f64)]) -> Vec<Line<f64>> {
+        points
+            .windows(2)
+            .map(|segment| {
+                let start = geo::Coord {
+                    x: segment[0].0,
+                    y: segment[0].1,
+                };
+                let end = geo::Coord {
+                    x: segment[1].0,
+                    y: segment[1].1,
+                };
+                Line::new(start, end)
+            })
+            .collect()
+    }
+
+    let mut lines = Vec::new();
+    lines.extend(ring_lines(&[
+        (0.0, 0.0),
+        (10.0, 0.0),
+        (10.0, 10.0),
+        (0.0, 10.0),
+        (0.0, 0.0),
+    ]));
+    lines.extend(ring_lines(&[
+        (0.0, 4.0),
+        (3.0, 4.0),
+        (3.0, 6.0),
+        (0.0, 6.0),
+        (0.0, 4.0),
+    ]));
+
+    let polygons = polygonize(lines.into_iter());
+    assert!(polygons.0.iter().all(|polygon| polygon.is_valid()));
 }

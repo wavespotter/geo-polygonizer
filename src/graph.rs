@@ -384,7 +384,12 @@ impl<T: GeoFloat> PolygonizerGraph<T> {
         let (valid_holes, valid_shells): (Vec<_>, Vec<_>) =
             valid_rings.into_iter().partition(|ring| ring.is_ccw());
 
-        MultiPolygon(assign_shells_to_holes(valid_shells, valid_holes))
+        MultiPolygon(
+            assign_shells_to_holes(valid_shells, valid_holes)
+                .into_iter()
+                .filter(|polygon| polygon.is_valid())
+                .collect(),
+        )
     }
 }
 
@@ -474,11 +479,6 @@ fn assign_shells_to_holes<T: GeoFloat + rstar::RTreeNum>(
         }
     }
 
-    let assigned_hole_indices: BTreeSet<usize> = assignments
-        .values()
-        .flat_map(|hole_indices| hole_indices.iter().copied())
-        .collect();
-
     let mut polygons: Vec<Polygon<T>> = shells
         .into_iter()
         .enumerate()
@@ -495,6 +495,11 @@ fn assign_shells_to_holes<T: GeoFloat + rstar::RTreeNum>(
             );
             polygon.orient(Direction::Default)
         })
+        .collect();
+
+    let assigned_hole_indices: BTreeSet<usize> = assignments
+        .values()
+        .flat_map(|hole_indices| hole_indices.iter().copied())
         .collect();
 
     for hole_index in assigned_hole_indices {
