@@ -383,7 +383,6 @@ fn polygonize_venn_overlaps_split_into_distinct_regions() {
     );
 }
 
-#[ignore]
 #[test]
 fn debug_missing_hole() {
     let lines = load_input_lines("failed_hole");

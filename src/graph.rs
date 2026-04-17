@@ -105,25 +105,77 @@ pub(crate) struct PolygonizerGraph<T: GeoFloat> {
 }
 
 impl<T: GeoFloat> PolygonizerGraph<T> {
-    /// For each directed edge (u -> v), returns the next directed edge along
-    /// the face on its left side when traversing the planar graph.
-    fn get_edge_to_next_left_face_edge_map(&self) -> BTreeMap<Edge<T>, Edge<T>> {
-        let mut next_left_face_edge_by_edge = BTreeMap::new();
+    fn get_edges_with_index_map(&self) -> (Vec<Edge<T>>, BTreeMap<Edge<T>, usize>) {
+        let mut edge_to_index: BTreeMap<Edge<T>, usize> = BTreeMap::new();
+        let mut edges_by_index: Vec<Edge<T>> = Vec::new();
 
         for outbound_edges_at_node in self.nodes_to_outbound_edges.values() {
-            let outbound_edges: Vec<_> = outbound_edges_at_node.iter().collect();
-            let edge_count = outbound_edges.len();
-            if edge_count == 0 {
+            for edge in outbound_edges_at_node {
+                if edge_to_index.contains_key(edge) {
+                    continue;
+                }
+
+                let edge_index = edges_by_index.len();
+                edges_by_index.push(*edge);
+                edge_to_index.insert(*edge, edge_index);
+            }
+        }
+
+        (edges_by_index, edge_to_index)
+    }
+
+    fn get_next_left_face_edge_index_by_edge_index(
+        &self,
+        edge_to_index: &BTreeMap<Edge<T>, usize>,
+        edge_count: usize,
+    ) -> Vec<Option<usize>> {
+        let mut next_left_face_edge_index_by_edge_index: Vec<Option<usize>> = vec![None; edge_count];
+
+        for outbound_edges_at_node in self.nodes_to_outbound_edges.values() {
+            let ordered_outgoing_edges: Vec<_> = outbound_edges_at_node.iter().collect();
+            let ordered_edge_count = ordered_outgoing_edges.len();
+            if ordered_edge_count == 0 {
                 continue;
             }
 
-            for edge_index in 0..edge_count {
-                let reverse_edge = *outbound_edges[edge_index];
+            for edge_index in 0..ordered_edge_count {
+                let reverse_edge = *ordered_outgoing_edges[edge_index];
                 let incoming_edge = reverse_edge.get_symmetrical();
                 let next_outgoing_edge =
-                    *outbound_edges[(edge_index + edge_count - 1) % edge_count];
-                next_left_face_edge_by_edge.insert(incoming_edge, next_outgoing_edge);
+                    *ordered_outgoing_edges[(edge_index + ordered_edge_count - 1) % ordered_edge_count];
+
+                let incoming_edge_index = *edge_to_index
+                    .get(&incoming_edge)
+                    .expect("incoming edge index should exist");
+                let next_outgoing_edge_index = *edge_to_index
+                    .get(&next_outgoing_edge)
+                    .expect("next outgoing edge index should exist");
+
+                next_left_face_edge_index_by_edge_index[incoming_edge_index] =
+                    Some(next_outgoing_edge_index);
             }
+        }
+
+        next_left_face_edge_index_by_edge_index
+    }
+
+    /// For each directed edge (u -> v), returns the next directed edge along
+    /// the face on its left side when traversing the planar graph.
+    fn get_edge_to_next_left_face_edge_map(&self) -> BTreeMap<Edge<T>, Edge<T>> {
+        let (edges_by_index, edge_to_index) = self.get_edges_with_index_map();
+        let next_left_face_edge_index_by_edge_index =
+            self.get_next_left_face_edge_index_by_edge_index(&edge_to_index, edges_by_index.len());
+
+        let mut next_left_face_edge_by_edge = BTreeMap::new();
+        for (edge_index, next_edge_index) in next_left_face_edge_index_by_edge_index
+            .iter()
+            .copied()
+            .enumerate()
+        {
+            let Some(next_edge_index) = next_edge_index else {
+                continue;
+            };
+            next_left_face_edge_by_edge.insert(edges_by_index[edge_index], edges_by_index[next_edge_index]);
         }
 
         next_left_face_edge_by_edge
@@ -238,46 +290,9 @@ impl<T: GeoFloat> PolygonizerGraph<T> {
     }
 
     pub(crate) fn delete_cut_edges(&mut self) {
-        let mut edge_to_index: BTreeMap<Edge<T>, usize> = BTreeMap::new();
-        let mut edges_by_index: Vec<Edge<T>> = Vec::new();
-
-        for outbound_edges_at_node in self.nodes_to_outbound_edges.values() {
-            for edge in outbound_edges_at_node {
-                if !edge_to_index.contains_key(edge) {
-                    let edge_index = edges_by_index.len();
-                    edges_by_index.push(*edge);
-                    edge_to_index.insert(*edge, edge_index);
-                }
-            }
-        }
-
-        let mut next_left_face_edge_index_by_edge_index: Vec<Option<usize>> =
-            vec![None; edges_by_index.len()];
-
-        for outbound_edges_at_node in self.nodes_to_outbound_edges.values() {
-            let ordered_outgoing_edges: Vec<_> = outbound_edges_at_node.iter().collect();
-            let edge_count = ordered_outgoing_edges.len();
-            if edge_count == 0 {
-                continue;
-            }
-
-            for edge_index in 0..edge_count {
-                let reverse_edge = *ordered_outgoing_edges[edge_index];
-                let incoming_edge = reverse_edge.get_symmetrical();
-                let next_outgoing_edge =
-                    *ordered_outgoing_edges[(edge_index + edge_count - 1) % edge_count];
-
-                let incoming_edge_index = *edge_to_index
-                    .get(&incoming_edge)
-                    .expect("incoming edge index should exist");
-                let next_outgoing_edge_index = *edge_to_index
-                    .get(&next_outgoing_edge)
-                    .expect("next outgoing edge index should exist");
-
-                next_left_face_edge_index_by_edge_index[incoming_edge_index] =
-                    Some(next_outgoing_edge_index);
-            }
-        }
+        let (edges_by_index, edge_to_index) = self.get_edges_with_index_map();
+        let next_left_face_edge_index_by_edge_index =
+            self.get_next_left_face_edge_index_by_edge_index(&edge_to_index, edges_by_index.len());
 
         let mut face_label_by_edge_index: Vec<Option<usize>> = vec![None; edges_by_index.len()];
         let mut next_face_label = 0usize;
@@ -376,7 +391,6 @@ impl<T: GeoFloat> PolygonizerGraph<T> {
                     return None;
                 }
 
-                // get the linestring back out to return it
                 let (linestring, _) = polygon.into_inner();
                 Some(linestring)
             })
@@ -605,4 +619,5 @@ fn assign_shells_to_holes<T: GeoFloat + rstar::RTreeNum>(
 
     polygons
 }
+
 
