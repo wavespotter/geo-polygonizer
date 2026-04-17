@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use geo::{Line, LinesIter, MultiPolygon, Polygon, Validation};
+use geo::{Contains, Line, LinesIter, MultiPolygon, Polygon, Validation, point};
 use geojson::GeometryValue;
 
 use super::*;
@@ -383,11 +383,16 @@ fn polygonize_venn_overlaps_split_into_distinct_regions() {
     );
 }
 
+#[ignore]
 #[test]
-fn debug_invalid_polygon() {
-    let lines = load_input_lines("buggy_outlines");
+fn debug_missing_hole() {
+    let lines = load_input_lines("failed_hole");
     let polygons = polygonize(lines.into_iter());
-    assert!(polygons.0.iter().all(|poly| poly.is_valid()));
+
+    let test_point = point! { x:131.85, y: 37.25 };
+    let num_polygons_containing_point = polygons.iter().filter(|poly| poly.contains(&test_point)).count();
+
+    assert_eq!(num_polygons_containing_point, 1);
 }
 
 #[test]
@@ -427,4 +432,18 @@ fn polygonize_filters_invalid_polygon_from_touching_hole_assignment() {
 
     let polygons = polygonize(lines.into_iter());
     assert!(polygons.0.iter().all(|polygon| polygon.is_valid()));
+}
+
+#[test]
+fn polygonize_handles_nested_shell_overlap_without_double_containment() {
+    let lines = load_input_lines("nested_shell_overlap_minimal");
+    let polygons = polygonize(lines.into_iter());
+    let test_point = point! { x: 131.85, y: 37.25 };
+    let containing_count = polygons
+        .0
+        .iter()
+        .filter(|polygon| polygon.contains(&test_point))
+        .count();
+
+    assert_eq!(containing_count, 1);
 }

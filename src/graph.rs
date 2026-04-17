@@ -5,7 +5,8 @@ use std::iter::{FilterMap, Flatten, Map};
 use geo::Winding;
 use geo::orient::Direction;
 use geo::{
-    GeoFloat, Line, LineString, LinesIter, MultiPolygon, Orient, Polygon, Validation, coord,
+    Contains, GeoFloat, InteriorPoint, Line, LineString, LinesIter, MultiPolygon, Orient,
+    Polygon, Validation, coord,
 };
 use rstar::{Envelope, RTreeObject};
 
@@ -384,13 +385,105 @@ impl<T: GeoFloat> PolygonizerGraph<T> {
         let (valid_holes, valid_shells): (Vec<_>, Vec<_>) =
             valid_rings.into_iter().partition(|ring| ring.is_ccw());
 
-        MultiPolygon(
-            assign_shells_to_holes(valid_shells, valid_holes)
-                .into_iter()
-                .filter(|polygon| polygon.is_valid())
-                .collect(),
-        )
+        let valid_polygons: Vec<_> = assign_shells_to_holes(valid_shells, valid_holes)
+            .into_iter()
+            .filter(|polygon| polygon.is_valid())
+            .collect();
+
+        MultiPolygon(infer_parent_holes_when_output_has_no_holes(valid_polygons))
     }
+}
+
+fn infer_parent_holes_when_output_has_no_holes<T: GeoFloat + rstar::RTreeNum>(
+    polygons: Vec<Polygon<T>>,
+) -> Vec<Polygon<T>> {
+    if polygons.iter().any(|polygon| !polygon.interiors().is_empty()) {
+        return polygons;
+    }
+
+    let polygon_envelopes: Vec<_> = polygons.iter().map(|polygon| polygon.envelope()).collect();
+
+    let mut parent_polygon_index_by_polygon_index: Vec<Option<usize>> = vec![None; polygons.len()];
+    for child_polygon_index in 0..polygons.len() {
+        let child_envelope = polygon_envelopes[child_polygon_index];
+        let mut best_parent: Option<(usize, T)> = None;
+
+        for parent_polygon_index in 0..polygons.len() {
+            if child_polygon_index == parent_polygon_index {
+                continue;
+            }
+
+            let parent_envelope = polygon_envelopes[parent_polygon_index];
+            if parent_envelope == child_envelope || !parent_envelope.contains_envelope(&child_envelope)
+            {
+                continue;
+            }
+
+            let child_interior_point = match polygons[child_polygon_index].interior_point() {
+                Some(point) => point,
+                None => continue,
+            };
+
+            if !polygons[parent_polygon_index].contains(&child_interior_point) {
+                continue;
+            }
+
+            let parent_envelope_area = parent_envelope.area();
+            if let Some((_, best_area)) = best_parent {
+                if parent_envelope_area >= best_area {
+                    continue;
+                }
+            }
+            best_parent = Some((parent_polygon_index, parent_envelope_area));
+        }
+
+        parent_polygon_index_by_polygon_index[child_polygon_index] =
+            best_parent.map(|(parent_polygon_index, _)| parent_polygon_index);
+    }
+
+    let mut inferred_holes_by_parent_polygon_index: BTreeMap<usize, Vec<LineString<T>>> =
+        BTreeMap::new();
+    for (child_polygon_index, parent_polygon_index) in
+        parent_polygon_index_by_polygon_index.iter().enumerate()
+    {
+        let parent_polygon_index = match parent_polygon_index {
+            Some(parent_polygon_index) => *parent_polygon_index,
+            None => continue,
+        };
+
+        let mut candidate_holes = inferred_holes_by_parent_polygon_index
+            .get(&parent_polygon_index)
+            .cloned()
+            .unwrap_or_default();
+        candidate_holes.push(polygons[child_polygon_index].exterior().clone());
+
+        let candidate_polygon = Polygon::new(
+            polygons[parent_polygon_index].exterior().clone(),
+            candidate_holes.clone(),
+        )
+        .orient(Direction::Default);
+        if !candidate_polygon.is_valid() {
+            continue;
+        }
+
+        inferred_holes_by_parent_polygon_index.insert(parent_polygon_index, candidate_holes);
+    }
+
+    polygons
+        .into_iter()
+        .enumerate()
+        .map(|(polygon_index, polygon)| {
+            let mut polygon_holes = polygon.interiors().to_vec();
+            polygon_holes.extend(
+                inferred_holes_by_parent_polygon_index
+                    .get(&polygon_index)
+                    .cloned()
+                    .unwrap_or_default(),
+            );
+
+            Polygon::new(polygon.exterior().clone(), polygon_holes).orient(Direction::Default)
+        })
+        .collect()
 }
 
 type EdgeToLine<'a, T> = fn(&'a Edge<T>) -> Option<Line<T>>;
@@ -512,3 +605,4 @@ fn assign_shells_to_holes<T: GeoFloat + rstar::RTreeNum>(
 
     polygons
 }
+
