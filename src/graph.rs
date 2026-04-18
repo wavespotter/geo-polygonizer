@@ -5,7 +5,7 @@ use std::iter::{FilterMap, Flatten, Map};
 use geo::Winding;
 use geo::orient::Direction;
 use geo::{
-    Contains, GeoFloat, InteriorPoint, Line, LineString, LinesIter, MultiPolygon, Orient,
+    Area, Contains, GeoFloat, InteriorPoint, Line, LineString, LinesIter, MultiPolygon, Orient,
     Polygon, Validation, coord,
 };
 use rstar::{Envelope, RTreeObject};
@@ -404,17 +404,47 @@ impl<T: GeoFloat> PolygonizerGraph<T> {
             .filter(|polygon| polygon.is_valid())
             .collect();
 
-        MultiPolygon(infer_parent_holes_when_output_has_no_holes(valid_polygons))
+        MultiPolygon(remove_redundant_overlapping_standalone_polygons(
+            infer_parent_holes_when_output_has_no_holes(valid_polygons),
+        ))
     }
+}
+
+fn remove_redundant_overlapping_standalone_polygons<T: GeoFloat>(
+    polygons: Vec<Polygon<T>>,
+) -> Vec<Polygon<T>> {
+    polygons
+        .iter()
+        .enumerate()
+        .filter_map(|(polygon_index, polygon)| {
+            if !polygon.interiors().is_empty() {
+                return Some(polygon.clone());
+            }
+
+            let interior_point = match polygon.interior_point() {
+                Some(point) => point,
+                None => return Some(polygon.clone()),
+            };
+
+            let is_redundant_overlap = polygons.iter().enumerate().any(|(other_index, other)| {
+                other_index != polygon_index
+                    && other.exterior() != polygon.exterior()
+                    && !other.interiors().is_empty()
+                    && other.contains(&interior_point)
+            });
+
+            if is_redundant_overlap {
+                None
+            } else {
+                Some(polygon.clone())
+            }
+        })
+        .collect()
 }
 
 fn infer_parent_holes_when_output_has_no_holes<T: GeoFloat + rstar::RTreeNum>(
     polygons: Vec<Polygon<T>>,
 ) -> Vec<Polygon<T>> {
-    if polygons.iter().any(|polygon| !polygon.interiors().is_empty()) {
-        return polygons;
-    }
-
     let polygon_envelopes: Vec<_> = polygons.iter().map(|polygon| polygon.envelope()).collect();
 
     let mut parent_polygon_index_by_polygon_index: Vec<Option<usize>> = vec![None; polygons.len()];
@@ -464,6 +494,19 @@ fn infer_parent_holes_when_output_has_no_holes<T: GeoFloat + rstar::RTreeNum>(
             Some(parent_polygon_index) => *parent_polygon_index,
             None => continue,
         };
+
+        let parent_exterior = polygons[parent_polygon_index].exterior();
+        let has_same_exterior_polygon_with_explicit_holes = polygons
+            .iter()
+            .enumerate()
+            .any(|(polygon_index, polygon)| {
+                polygon_index != parent_polygon_index
+                    && polygon.exterior() == parent_exterior
+                    && !polygon.interiors().is_empty()
+            });
+        if has_same_exterior_polygon_with_explicit_holes {
+            continue;
+        }
 
         let mut candidate_holes = inferred_holes_by_parent_polygon_index
             .get(&parent_polygon_index)
@@ -550,6 +593,12 @@ fn assign_shells_to_holes<T: GeoFloat + rstar::RTreeNum>(
     shells: Vec<LineString<T>>,
     holes: Vec<LineString<T>>,
 ) -> Vec<Polygon<T>> {
+    let shell_polygons: Vec<_> = shells
+        .iter()
+        .cloned()
+        .map(|shell| Polygon::new(shell, vec![]))
+        .collect();
+
     let shell_containers = shells
         .iter()
         .enumerate()
@@ -563,19 +612,24 @@ fn assign_shells_to_holes<T: GeoFloat + rstar::RTreeNum>(
     let mut assignments: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
 
     for (hole_index, hole) in holes.iter().enumerate() {
+        let hole_interior_point = match Polygon::new(hole.clone(), vec![]).interior_point() {
+            Some(point) => point,
+            None => continue,
+        };
+
         let hole_envelope = hole.envelope();
         let mut matching_shells: Vec<_> = shell_tree
             .locate_in_envelope_intersecting(&hole.envelope())
             .filter(|container| {
                 container.envelope.contains_envelope(&hole_envelope)
                     && container.envelope != hole_envelope
+                    && shell_polygons[container.idx].contains(&hole_interior_point)
             })
             .collect();
         matching_shells.sort_by(|left_shell, right_shell| {
-            left_shell
-                .envelope
-                .area()
-                .total_cmp(&right_shell.envelope.area())
+            shell_polygons[left_shell.idx]
+                .unsigned_area()
+                .total_cmp(&shell_polygons[right_shell.idx].unsigned_area())
         });
 
         if let Some(container) = matching_shells.first() {
@@ -612,7 +666,27 @@ fn assign_shells_to_holes<T: GeoFloat + rstar::RTreeNum>(
     for hole_index in assigned_hole_indices {
         let standalone_hole_polygon =
             Polygon::new(holes[hole_index].clone(), vec![]).orient(Direction::Default);
-        if !polygons.contains(&standalone_hole_polygon) {
+
+        let overlaps_different_exterior_holed_polygon = polygons.iter().any(|polygon| {
+            polygon.exterior() != standalone_hole_polygon.exterior()
+                && !polygon.interiors().is_empty()
+                && standalone_hole_polygon
+                    .exterior()
+                    .points()
+                    .any(|point| polygon.contains(&point))
+        });
+
+        let max_holes_with_same_exterior = polygons
+            .iter()
+            .filter(|polygon| polygon.exterior() == standalone_hole_polygon.exterior())
+            .map(|polygon| polygon.interiors().len())
+            .max()
+            .unwrap_or(0);
+
+        if !overlaps_different_exterior_holed_polygon
+            && max_holes_with_same_exterior <= 1
+            && !polygons.contains(&standalone_hole_polygon)
+        {
             polygons.push(standalone_hole_polygon);
         }
     }

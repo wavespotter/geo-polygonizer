@@ -240,6 +240,203 @@ fn canonicalize_multipolygon(
     polygons
 }
 
+fn has_self_intersection(ring: &geo::LineString<f64>, epsilon: f64) -> bool {
+    fn orient(a: (f64, f64), b: (f64, f64), c: (f64, f64)) -> f64 {
+        (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0)
+    }
+
+    fn between(value: f64, left: f64, right: f64, epsilon: f64) -> bool {
+        let min_value = left.min(right) - epsilon;
+        let max_value = left.max(right) + epsilon;
+        value >= min_value && value <= max_value
+    }
+
+    fn on_segment(a: (f64, f64), b: (f64, f64), p: (f64, f64), epsilon: f64) -> bool {
+        between(p.0, a.0, b.0, epsilon) && between(p.1, a.1, b.1, epsilon)
+    }
+
+    fn segments_intersect(
+        a1: (f64, f64),
+        a2: (f64, f64),
+        b1: (f64, f64),
+        b2: (f64, f64),
+        epsilon: f64,
+    ) -> bool {
+        let o1 = orient(a1, a2, b1);
+        let o2 = orient(a1, a2, b2);
+        let o3 = orient(b1, b2, a1);
+        let o4 = orient(b1, b2, a2);
+
+        let proper = (o1 > epsilon && o2 < -epsilon || o1 < -epsilon && o2 > epsilon)
+            && (o3 > epsilon && o4 < -epsilon || o3 < -epsilon && o4 > epsilon);
+        if proper {
+            return true;
+        }
+
+        (o1.abs() <= epsilon && on_segment(a1, a2, b1, epsilon))
+            || (o2.abs() <= epsilon && on_segment(a1, a2, b2, epsilon))
+            || (o3.abs() <= epsilon && on_segment(b1, b2, a1, epsilon))
+            || (o4.abs() <= epsilon && on_segment(b1, b2, a2, epsilon))
+    }
+
+    let mut coordinates: Vec<(f64, f64)> = ring.points().map(|point| (point.x(), point.y())).collect();
+    if coordinates.len() < 4 {
+        return false;
+    }
+
+    if coordinates.first() == coordinates.last() {
+        coordinates.pop();
+    }
+
+    let segment_count = coordinates.len();
+    if segment_count < 3 {
+        return false;
+    }
+
+    for first_segment_index in 0..segment_count {
+        let first_start = coordinates[first_segment_index];
+        let first_end = coordinates[(first_segment_index + 1) % segment_count];
+
+        for second_segment_index in (first_segment_index + 1)..segment_count {
+            if second_segment_index == first_segment_index {
+                continue;
+            }
+
+            let first_next_index = (first_segment_index + 1) % segment_count;
+            let second_next_index = (second_segment_index + 1) % segment_count;
+            let are_adjacent = second_segment_index == first_next_index
+                || first_segment_index == second_next_index;
+            if are_adjacent {
+                continue;
+            }
+
+            if first_segment_index == 0 && second_next_index == 0 {
+                continue;
+            }
+
+            let second_start = coordinates[second_segment_index];
+            let second_end = coordinates[second_next_index];
+
+            if segments_intersect(first_start, first_end, second_start, second_end, epsilon) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+fn ring_has_boundary_contact(
+    ring: &geo::LineString<f64>,
+    other_ring: &geo::LineString<f64>,
+    epsilon: f64,
+) -> bool {
+    fn orient(a: (f64, f64), b: (f64, f64), c: (f64, f64)) -> f64 {
+        (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0)
+    }
+
+    fn between(value: f64, left: f64, right: f64, epsilon: f64) -> bool {
+        let min_value = left.min(right) - epsilon;
+        let max_value = left.max(right) + epsilon;
+        value >= min_value && value <= max_value
+    }
+
+    fn on_segment(a: (f64, f64), b: (f64, f64), p: (f64, f64), epsilon: f64) -> bool {
+        between(p.0, a.0, b.0, epsilon) && between(p.1, a.1, b.1, epsilon)
+    }
+
+    fn segments_contact(
+        a1: (f64, f64),
+        a2: (f64, f64),
+        b1: (f64, f64),
+        b2: (f64, f64),
+        epsilon: f64,
+    ) -> bool {
+        let o1 = orient(a1, a2, b1);
+        let o2 = orient(a1, a2, b2);
+        let o3 = orient(b1, b2, a1);
+        let o4 = orient(b1, b2, a2);
+
+        let proper = (o1 > epsilon && o2 < -epsilon || o1 < -epsilon && o2 > epsilon)
+            && (o3 > epsilon && o4 < -epsilon || o3 < -epsilon && o4 > epsilon);
+        if proper {
+            return true;
+        }
+
+        (o1.abs() <= epsilon && on_segment(a1, a2, b1, epsilon))
+            || (o2.abs() <= epsilon && on_segment(a1, a2, b2, epsilon))
+            || (o3.abs() <= epsilon && on_segment(b1, b2, a1, epsilon))
+            || (o4.abs() <= epsilon && on_segment(b1, b2, a2, epsilon))
+    }
+
+    let mut coordinates: Vec<(f64, f64)> = ring.points().map(|point| (point.x(), point.y())).collect();
+    let mut other_coordinates: Vec<(f64, f64)> = other_ring
+        .points()
+        .map(|point| (point.x(), point.y()))
+        .collect();
+
+    if coordinates.first() == coordinates.last() {
+        coordinates.pop();
+    }
+    if other_coordinates.first() == other_coordinates.last() {
+        other_coordinates.pop();
+    }
+
+    if coordinates.len() < 3 || other_coordinates.len() < 3 {
+        return false;
+    }
+
+    for first_segment_index in 0..coordinates.len() {
+        let first_start = coordinates[first_segment_index];
+        let first_end = coordinates[(first_segment_index + 1) % coordinates.len()];
+
+        for second_segment_index in 0..other_coordinates.len() {
+            let second_start = other_coordinates[second_segment_index];
+            let second_end = other_coordinates[(second_segment_index + 1) % other_coordinates.len()];
+
+            if segments_contact(first_start, first_end, second_start, second_end, epsilon) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+fn polygon_has_boundary_contact(polygon: &Polygon<f64>, epsilon: f64) -> bool {
+    if has_self_intersection(polygon.exterior(), epsilon)
+        || polygon
+            .interiors()
+            .iter()
+            .any(|ring| has_self_intersection(ring, epsilon))
+    {
+        return true;
+    }
+
+    let interiors = polygon.interiors();
+
+    if interiors
+        .iter()
+        .any(|interior| ring_has_boundary_contact(polygon.exterior(), interior, epsilon))
+    {
+        return true;
+    }
+
+    for first_hole_index in 0..interiors.len() {
+        for second_hole_index in (first_hole_index + 1)..interiors.len() {
+            if ring_has_boundary_contact(
+                &interiors[first_hole_index],
+                &interiors[second_hole_index],
+                epsilon,
+            ) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
 fn assert_polygonize_fixture(name: &str) {
     let input_lines = load_input_lines(name);
     let actual = polygonize(input_lines);
@@ -392,6 +589,50 @@ fn debug_missing_hole() {
     let num_polygons_containing_point = polygons.iter().filter(|poly| poly.contains(&test_point)).count();
 
     assert_eq!(num_polygons_containing_point, 1);
+}
+
+#[test]
+fn debug_missing_hole_again() {
+    let lines = load_input_lines("debug_missing_hole_again");
+    let polygons = polygonize(lines.into_iter());
+
+    let test_point = point! { x:5.9, y: 39.0 };
+    let num_polygons_containing_point = polygons.iter().filter(|poly| poly.contains(&test_point)).count();
+
+    assert_eq!(num_polygons_containing_point, 1);
+
+    let test_point2 = point! { x:1.25, y: 39.5 };
+    let num_polygons_containing_point2 = polygons.iter().filter(|poly| poly.contains(&test_point2)).count();
+
+    assert_eq!(num_polygons_containing_point2, 1);
+}
+
+#[test]
+fn debug_missing_hole_again_again_minimal() {
+    let lines = load_input_lines("debug_missing_hole_again_again_minimal");
+    let polygons = polygonize(lines.into_iter());
+
+    let test_point = point! { x:110.35, y: 20.2 };
+    let num_polygons_containing_point = polygons.iter().filter(|poly| poly.contains(&test_point)).count();
+
+    assert_eq!(num_polygons_containing_point, 1);
+}
+
+#[test]
+fn debug_missing_hole_again_again() {
+    let lines = load_input_lines("produces_overlapping_polygons");
+    let polygons = polygonize(lines.into_iter());
+
+    let test_point = point! { x:110.35, y: 20.2 };
+    let polygons_containing_point: Vec<_> = polygons.iter().filter(|poly| poly.contains(&test_point)).collect();
+
+    assert_eq!(polygons_containing_point.len(), 1);
+
+    let has_boundary_contact = polygon_has_boundary_contact(polygons_containing_point[0], 1e-10);
+    assert!(
+        has_boundary_contact,
+        "expected boundary contact (pinch/touch) in containing polygon"
+    );
 }
 
 #[test]
