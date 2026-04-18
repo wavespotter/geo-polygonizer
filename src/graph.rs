@@ -130,7 +130,8 @@ impl<T: GeoFloat> PolygonizerGraph<T> {
         edge_to_index: &BTreeMap<Edge<T>, usize>,
         edge_count: usize,
     ) -> Vec<Option<usize>> {
-        let mut next_left_face_edge_index_by_edge_index: Vec<Option<usize>> = vec![None; edge_count];
+        let mut next_left_face_edge_index_by_edge_index: Vec<Option<usize>> =
+            vec![None; edge_count];
 
         for outbound_edges_at_node in self.nodes_to_outbound_edges.values() {
             let ordered_outgoing_edges: Vec<_> = outbound_edges_at_node.iter().collect();
@@ -142,8 +143,8 @@ impl<T: GeoFloat> PolygonizerGraph<T> {
             for edge_index in 0..ordered_edge_count {
                 let reverse_edge = *ordered_outgoing_edges[edge_index];
                 let incoming_edge = reverse_edge.get_symmetrical();
-                let next_outgoing_edge =
-                    *ordered_outgoing_edges[(edge_index + ordered_edge_count - 1) % ordered_edge_count];
+                let next_outgoing_edge = *ordered_outgoing_edges
+                    [(edge_index + ordered_edge_count - 1) % ordered_edge_count];
 
                 let incoming_edge_index = *edge_to_index
                     .get(&incoming_edge)
@@ -176,7 +177,8 @@ impl<T: GeoFloat> PolygonizerGraph<T> {
             let Some(next_edge_index) = next_edge_index else {
                 continue;
             };
-            next_left_face_edge_by_edge.insert(edges_by_index[edge_index], edges_by_index[next_edge_index]);
+            next_left_face_edge_by_edge
+                .insert(edges_by_index[edge_index], edges_by_index[next_edge_index]);
         }
 
         next_left_face_edge_by_edge
@@ -444,15 +446,18 @@ fn polygon_unique_boundary_segment_count<T: GeoFloat>(
     polygon_lines
         .iter()
         .filter(|line| {
-            !polygons.iter().enumerate().any(|(other_index, other_polygon)| {
-                if other_index == polygon_index {
-                    return false;
-                }
+            !polygons
+                .iter()
+                .enumerate()
+                .any(|(other_index, other_polygon)| {
+                    if other_index == polygon_index {
+                        return false;
+                    }
 
-                polygon_boundary_lines(other_polygon)
-                    .iter()
-                    .any(|other_line| lines_have_same_endpoints(line, other_line))
-            })
+                    polygon_boundary_lines(other_polygon)
+                        .iter()
+                        .any(|other_line| lines_have_same_endpoints(line, other_line))
+                })
         })
         .count()
 }
@@ -499,9 +504,9 @@ fn remove_non_unique_interior_points_for_touching_topology<T: GeoFloat + rstar::
                     unique_boundary_segment_count_by_index[*right_index]
                         .cmp(&unique_boundary_segment_count_by_index[*left_index])
                         .then(
-                    current_polygons[*left_index]
-                        .unsigned_area()
-                        .total_cmp(&current_polygons[*right_index].unsigned_area())
+                            current_polygons[*left_index]
+                                .unsigned_area()
+                                .total_cmp(&current_polygons[*right_index].unsigned_area()),
                         )
                         .then(left_index.cmp(right_index))
                 })
@@ -628,18 +633,23 @@ fn prune_container_faces<T: GeoFloat>(faces: &[Polygon<T>]) -> Vec<Polygon<T>> {
         .iter()
         .enumerate()
         .filter_map(|(face_index, face)| {
-            let contains_another_face = faces.iter().enumerate().any(|(other_face_index, other_face)| {
-                if face_index == other_face_index {
-                    return false;
-                }
+            let contains_another_face =
+                faces
+                    .iter()
+                    .enumerate()
+                    .any(|(other_face_index, other_face)| {
+                        if face_index == other_face_index {
+                            return false;
+                        }
 
-                let other_interior_point = match other_face.interior_point() {
-                    Some(point) => point,
-                    None => return false,
-                };
+                        let other_interior_point = match other_face.interior_point() {
+                            Some(point) => point,
+                            None => return false,
+                        };
 
-                face.exterior() != other_face.exterior() && face.contains(&other_interior_point)
-            });
+                        face.exterior() != other_face.exterior()
+                            && face.contains(&other_interior_point)
+                    });
 
             if contains_another_face {
                 None
@@ -650,14 +660,16 @@ fn prune_container_faces<T: GeoFloat>(faces: &[Polygon<T>]) -> Vec<Polygon<T>> {
         .collect()
 }
 
-fn select_non_touching_holes<T: GeoFloat + rstar::RTreeNum>(polygon: &Polygon<T>) -> Vec<LineString<T>> {
+fn select_non_touching_holes<T: GeoFloat + rstar::RTreeNum>(
+    polygon: &Polygon<T>,
+) -> Vec<LineString<T>> {
     let mut kept_holes: Vec<LineString<T>> = Vec::new();
     for hole in polygon.interiors() {
         let mut candidate_holes = kept_holes.clone();
         candidate_holes.push(hole.clone());
 
-        let candidate_polygon =
-            Polygon::new(polygon.exterior().clone(), candidate_holes.clone()).orient(Direction::Default);
+        let candidate_polygon = Polygon::new(polygon.exterior().clone(), candidate_holes.clone())
+            .orient(Direction::Default);
         if !graph_has_touching_topology(&build_touching_boundary_graph(&candidate_polygon)) {
             kept_holes = candidate_holes;
         }
@@ -700,16 +712,10 @@ fn split_no_hole_polygon_on_repeated_vertex<T: GeoFloat>(
                 continue;
             }
 
-            let first_polygon = Polygon::new(
-                LineString::from(first_ring_coords),
-                vec![],
-            )
-            .orient(Direction::Default);
-            let second_polygon = Polygon::new(
-                LineString::from(second_ring_coords),
-                vec![],
-            )
-            .orient(Direction::Default);
+            let first_polygon = Polygon::new(LineString::from(first_ring_coords), vec![])
+                .orient(Direction::Default);
+            let second_polygon = Polygon::new(LineString::from(second_ring_coords), vec![])
+                .orient(Direction::Default);
 
             if first_polygon.is_valid() && second_polygon.is_valid() {
                 return Some(vec![first_polygon, second_polygon]);
@@ -765,7 +771,9 @@ fn remove_redundant_overlapping_standalone_polygons<T: GeoFloat>(
                     && other.contains(&interior_point)
             });
 
-            if is_redundant_overlap && !polygon_has_unique_boundary_segment(&polygons, polygon_index) {
+            if is_redundant_overlap
+                && !polygon_has_unique_boundary_segment(&polygons, polygon_index)
+            {
                 None
             } else {
                 Some(polygon.clone())
@@ -790,7 +798,8 @@ fn infer_parent_holes_when_output_has_no_holes<T: GeoFloat + rstar::RTreeNum>(
             }
 
             let parent_envelope = polygon_envelopes[parent_polygon_index];
-            if parent_envelope == child_envelope || !parent_envelope.contains_envelope(&child_envelope)
+            if parent_envelope == child_envelope
+                || !parent_envelope.contains_envelope(&child_envelope)
             {
                 continue;
             }
@@ -828,10 +837,8 @@ fn infer_parent_holes_when_output_has_no_holes<T: GeoFloat + rstar::RTreeNum>(
         };
 
         let parent_exterior = polygons[parent_polygon_index].exterior();
-        let has_same_exterior_polygon_with_explicit_holes = polygons
-            .iter()
-            .enumerate()
-            .any(|(polygon_index, polygon)| {
+        let has_same_exterior_polygon_with_explicit_holes =
+            polygons.iter().enumerate().any(|(polygon_index, polygon)| {
                 polygon_index != parent_polygon_index
                     && polygon.exterior() == parent_exterior
                     && !polygon.interiors().is_empty()
@@ -1025,5 +1032,3 @@ fn assign_shells_to_holes<T: GeoFloat + rstar::RTreeNum>(
 
     polygons
 }
-
-

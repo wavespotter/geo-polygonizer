@@ -279,7 +279,8 @@ fn ring_has_self_contact(ring: &geo::LineString<f64>, epsilon: f64) -> bool {
             || (o4.abs() <= epsilon && on_segment(b1, b2, a2, epsilon))
     }
 
-    let mut coordinates: Vec<(f64, f64)> = ring.points().map(|point| (point.x(), point.y())).collect();
+    let mut coordinates: Vec<(f64, f64)> =
+        ring.points().map(|point| (point.x(), point.y())).collect();
     if coordinates.first() == coordinates.last() {
         coordinates.pop();
     }
@@ -362,9 +363,12 @@ fn ring_pair_has_contact(
             || (o4.abs() <= epsilon && on_segment(b1, b2, a2, epsilon))
     }
 
-    let mut coordinates: Vec<(f64, f64)> = ring.points().map(|point| (point.x(), point.y())).collect();
-    let mut other_coordinates: Vec<(f64, f64)> =
-        other_ring.points().map(|point| (point.x(), point.y())).collect();
+    let mut coordinates: Vec<(f64, f64)> =
+        ring.points().map(|point| (point.x(), point.y())).collect();
+    let mut other_coordinates: Vec<(f64, f64)> = other_ring
+        .points()
+        .map(|point| (point.x(), point.y()))
+        .collect();
 
     if coordinates.first() == coordinates.last() {
         coordinates.pop();
@@ -383,7 +387,8 @@ fn ring_pair_has_contact(
 
         for second_segment_index in 0..other_coordinates.len() {
             let second_start = other_coordinates[second_segment_index];
-            let second_end = other_coordinates[(second_segment_index + 1) % other_coordinates.len()];
+            let second_end =
+                other_coordinates[(second_segment_index + 1) % other_coordinates.len()];
 
             if segments_contact(first_start, first_end, second_start, second_end, epsilon) {
                 return true;
@@ -430,7 +435,11 @@ fn polygon_has_pinch_contact(polygon: &Polygon<f64>, epsilon: f64) -> bool {
     false
 }
 
-fn lines_have_positive_collinear_overlap(first: &Line<f64>, second: &Line<f64>, epsilon: f64) -> bool {
+fn lines_have_positive_collinear_overlap(
+    first: &Line<f64>,
+    second: &Line<f64>,
+    epsilon: f64,
+) -> bool {
     fn cross(a: (f64, f64), b: (f64, f64)) -> f64 {
         a.0 * b.1 - a.1 * b.0
     }
@@ -446,7 +455,10 @@ fn lines_have_positive_collinear_overlap(first: &Line<f64>, second: &Line<f64>, 
         return false;
     }
 
-    let second_start_offset = (second.start.x - first.start.x, second.start.y - first.start.y);
+    let second_start_offset = (
+        second.start.x - first.start.x,
+        second.start.y - first.start.y,
+    );
     let second_end_offset = (second.end.x - first.start.x, second.end.y - first.start.y);
 
     if cross(first_direction, second_start_offset).abs() > epsilon
@@ -503,10 +515,9 @@ fn line_is_represented_on_output_boundary(
     boundary_lines: &[Line<f64>],
     epsilon: f64,
 ) -> bool {
-    if boundary_lines
-        .iter()
-        .any(|boundary_line| lines_have_positive_collinear_overlap(input_line, boundary_line, epsilon))
-    {
+    if boundary_lines.iter().any(|boundary_line| {
+        lines_have_positive_collinear_overlap(input_line, boundary_line, epsilon)
+    }) {
         return true;
     }
 
@@ -669,7 +680,10 @@ fn polygonize_failed_hole_probe_point_has_single_owner() {
     let polygons = polygonize(lines.into_iter());
 
     let test_point = point! { x:131.85, y: 37.25 };
-    let num_polygons_containing_point = polygons.iter().filter(|poly| poly.contains(&test_point)).count();
+    let num_polygons_containing_point = polygons
+        .iter()
+        .filter(|poly| poly.contains(&test_point))
+        .count();
 
     assert_eq!(num_polygons_containing_point, 1);
 }
@@ -734,17 +748,13 @@ fn polygonize_touching_hole_overlap_ownership_minimal_invariants() {
             continue;
         }
 
-        let appears_on_output_boundary = line_is_represented_on_output_boundary(
-            input_line,
-            &output_boundary_lines,
-            1e-10,
-        );
+        let appears_on_output_boundary =
+            line_is_represented_on_output_boundary(input_line, &output_boundary_lines, 1e-10);
 
         assert!(
             appears_on_output_boundary,
             "input line {line_index} ({:?} -> {:?}) is not represented on output polygon boundaries",
-            input_line.start,
-            input_line.end
+            input_line.start, input_line.end
         );
     }
 }
