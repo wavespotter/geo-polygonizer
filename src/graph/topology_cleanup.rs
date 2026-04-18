@@ -54,6 +54,16 @@ fn polygon_unique_boundary_segment_count<T: GeoFloat>(
         .count()
 }
 
+fn polygons_share_any_boundary_segment<T: GeoFloat>(a: &Polygon<T>, b: &Polygon<T>) -> bool {
+    let a_lines = polygon_boundary_lines(a);
+    let b_lines = polygon_boundary_lines(b);
+    a_lines.iter().any(|a_line| {
+        b_lines
+            .iter()
+            .any(|b_line| lines_have_same_endpoints(a_line, b_line))
+    })
+}
+
 pub(super) fn remove_non_unique_interior_points_for_touching_topology<
     T: GeoFloat + rstar::RTreeNum,
 >(
@@ -118,6 +128,25 @@ pub(super) fn remove_non_unique_interior_points_for_touching_topology<
                             },
                         );
                     if keep_same_exterior_plain_variant {
+                        continue;
+                    }
+
+                    // Don't remove a polygon that doesn't share any boundary
+                    // segments with the owner. If they share no boundary, the owner
+                    // is simply nested inside the candidate (containment), not a
+                    // redundant overlapping polygon.
+                    if !polygons_share_any_boundary_segment(
+                        candidate_polygon,
+                        &current_polygons[owner_index],
+                    ) {
+                        continue;
+                    }
+
+                    // Don't remove a polygon that fully contains the owner.
+                    // When the candidate polygon contains the owner, the owner
+                    // is a nested face inside the candidate — removing the outer
+                    // polygon would destroy a legitimate region.
+                    if candidate_polygon.contains(&current_polygons[owner_index]) {
                         continue;
                     }
 
@@ -347,10 +376,19 @@ pub(super) fn remove_redundant_overlapping_standalone_polygons<T: GeoFloat>(
             };
 
             let is_redundant_overlap = polygons.iter().enumerate().any(|(other_index, other)| {
-                other_index != polygon_index
-                    && other.exterior() != polygon.exterior()
-                    && !other.interiors().is_empty()
-                    && other.contains(&interior_point)
+                if other_index == polygon_index
+                    || other.exterior() == polygon.exterior()
+                    || other.interiors().is_empty()
+                {
+                    return false;
+                }
+                if !other.contains(&interior_point) {
+                    return false;
+                }
+                // Don't count it as redundant if the parent fully contains this polygon.
+                // That's simple containment, not redundant overlap.
+                let parent_contains_child = other.contains(polygon);
+                !parent_contains_child
             });
 
             if is_redundant_overlap
@@ -462,4 +500,314 @@ pub(super) fn infer_parent_holes_when_output_has_no_holes<T: GeoFloat + rstar::R
             Polygon::new(polygon.exterior().clone(), polygon_holes).orient(Direction::Default)
         })
         .collect()
+}
+
+/// For each standalone polygon (no holes) whose interior point is contained
+/// by another polygon, add the standalone's exterior as a hole of the
+/// containing polygon.  This handles "island" polygons that sit fully inside
+/// a larger polygon and must be carved out, regardless of whether the parent
+/// already has holes.
+pub(super) fn carve_contained_standalones_as_holes<T: GeoFloat + rstar::RTreeNum>(
+    polygons: Vec<Polygon<T>>,
+) -> Vec<Polygon<T>> {
+    let mut polygons = polygons;
+
+    for child_index in 0..polygons.len() {
+        if !polygons[child_index].interiors().is_empty() {
+            continue;
+        }
+
+        let child_interior_point = match polygons[child_index].interior_point() {
+            Some(point) => point,
+            None => continue,
+        };
+        let min_area = T::from(1e-9).unwrap_or(T::epsilon());
+        if polygons[child_index].unsigned_area() <= min_area {
+            continue;
+        }
+
+        let child_exterior = polygons[child_index].exterior().clone();
+
+        // Find the smallest containing polygon that has a different exterior.
+        let mut candidate_parents: Vec<(usize, T)> = polygons
+            .iter()
+            .enumerate()
+            .filter_map(|(parent_index, parent_polygon)| {
+                if parent_index == child_index {
+                    return None;
+                }
+                if parent_polygon.exterior() == &child_exterior {
+                    return None;
+                }
+                if !parent_polygon.contains(&child_interior_point) {
+                    return None;
+                }
+                Some((parent_index, parent_polygon.unsigned_area()))
+            })
+            .collect();
+        candidate_parents.sort_by(|a, b| a.1.total_cmp(&b.1));
+
+        if candidate_parents.is_empty() {
+            continue;
+        }
+
+        for (parent_index, _) in candidate_parents {
+            // Skip if the child is already a hole of this parent.
+            if polygons[parent_index]
+                .interiors()
+                .iter()
+                .any(|hole| hole == &child_exterior)
+            {
+                continue;
+            }
+
+            // Skip if the parent has no holes and a sibling polygon with the
+            // same exterior already has holes — the parent is the "plain"
+            // variant that should stay hole-free.
+            if polygons[parent_index].interiors().is_empty() {
+                let sibling_has_holes = polygons.iter().enumerate().any(
+                    |(other_index, other_polygon)| {
+                        other_index != parent_index
+                            && other_polygon.exterior() == polygons[parent_index].exterior()
+                            && !other_polygon.interiors().is_empty()
+                    },
+                );
+                if sibling_has_holes {
+                    continue;
+                }
+            }
+
+            let mut new_holes = polygons[parent_index].interiors().to_vec();
+            new_holes.push(child_exterior.clone());
+
+            let candidate =
+                Polygon::new(polygons[parent_index].exterior().clone(), new_holes)
+                    .orient(Direction::Default);
+            if candidate.is_valid() {
+                polygons[parent_index] = candidate;
+                break;
+            }
+        }
+    }
+
+    polygons
+}
+
+pub(super) fn infer_contained_standalone_polygons_as_holes<T: GeoFloat + rstar::RTreeNum>(
+    polygons: Vec<Polygon<T>>,
+) -> Vec<Polygon<T>> {
+    let mut polygons = polygons;
+
+    for child_polygon_index in 0..polygons.len() {
+        if !polygons[child_polygon_index].interiors().is_empty() {
+            continue;
+        }
+
+        let child_interior_point = match polygons[child_polygon_index].interior_point() {
+            Some(point) => point,
+            None => continue,
+        };
+        let min_child_area = T::from(1e-9).unwrap_or(T::epsilon());
+        if polygons[child_polygon_index].unsigned_area() <= min_child_area {
+            continue;
+        }
+
+        // Only skip standalone polygons with unique boundary segments if
+        // their area is above a threshold. Tiny polygons with unique edges
+        // are often artifacts (faces between adjacent holes) that should
+        // be absorbed as holes of the enclosing polygon.
+        let child_area = polygons[child_polygon_index].unsigned_area();
+        let tiny_threshold = T::from(0.1).unwrap_or(T::epsilon());
+        if child_area > tiny_threshold
+            && polygon_unique_boundary_segment_count(&polygons, child_polygon_index) > 0
+        {
+            continue;
+        }
+
+        let child_exterior = polygons[child_polygon_index].exterior().clone();
+
+        let mut candidate_parent_indices: Vec<usize> = polygons
+            .iter()
+            .enumerate()
+            .filter_map(|(parent_polygon_index, parent_polygon)| {
+                if parent_polygon_index == child_polygon_index {
+                    return None;
+                }
+                if parent_polygon.interiors().len() < 2 {
+                    return None;
+                }
+                if parent_polygon.exterior() == polygons[child_polygon_index].exterior() {
+                    return None;
+                }
+
+                // Check containment using only the parent's exterior ring
+                // (ignoring existing holes), since the child might be between
+                // existing holes.
+                let parent_exterior_only = Polygon::new(parent_polygon.exterior().clone(), vec![]);
+                if !parent_exterior_only.contains(&child_interior_point) {
+                    return None;
+                }
+                Some(parent_polygon_index)
+            })
+            .collect();
+
+        candidate_parent_indices.sort_by(|left_index, right_index| {
+            polygons[*left_index]
+                .unsigned_area()
+                .total_cmp(&polygons[*right_index].unsigned_area())
+        });
+
+        for parent_polygon_index in candidate_parent_indices {
+            let mut candidate_holes = polygons[parent_polygon_index].interiors().to_vec();
+
+            if candidate_holes.iter().any(|hole| hole == &child_exterior) {
+                continue;
+            }
+
+            candidate_holes.push(child_exterior.clone());
+            let candidate_parent_polygon =
+                Polygon::new(polygons[parent_polygon_index].exterior().clone(), candidate_holes)
+                    .orient(Direction::Default);
+            if !candidate_parent_polygon.is_valid() {
+                continue;
+            }
+
+            polygons[parent_polygon_index] = candidate_parent_polygon;
+            break;
+        }
+    }
+
+    polygons
+}
+
+/// For each polygon with holes, find standalone polygons (from the `polygons`
+/// list) that are contained within the polygon's exterior AND share vertices
+/// with existing holes. These standalone polygons are "gap fills" between
+/// holes, and together with the existing holes they form a connected hole
+/// region. Merge all connected hole components (existing holes + matching
+/// standalone polygons) into single combined holes.
+pub(super) fn merge_touching_holes_in_polygons<T: GeoFloat + rstar::RTreeNum>(
+    polygons: Vec<Polygon<T>>,
+) -> Vec<Polygon<T>> {
+    let mut polygons = polygons;
+
+    // For each polygon with >= 2 holes, look for standalone polygons that
+    // connect its holes at shared vertices.
+    for parent_idx in 0..polygons.len() {
+        if polygons[parent_idx].interiors().len() < 2 {
+            continue;
+        }
+
+        let parent_exterior_only =
+            Polygon::new(polygons[parent_idx].exterior().clone(), vec![]);
+
+        // Build per-hole vertex lists.
+        let hole_vertex_sets: Vec<Vec<(T, T)>> = polygons[parent_idx]
+            .interiors()
+            .iter()
+            .map(|hole| hole.0.iter().map(|c| (c.x, c.y)).collect())
+            .collect();
+
+        // Collect all hole vertex coords for the parent (flattened).
+        let parent_hole_coords: Vec<(T, T)> = hole_vertex_sets
+            .iter()
+            .flat_map(|s| s.iter().copied())
+            .collect();
+
+        // Find standalone polygons (no holes, small) whose exterior shares
+        // vertices with the parent's holes and is inside the parent's exterior.
+        // Track WHICH holes each standalone connects to.
+        let mut connecting_standalone_indices: Vec<usize> = Vec::new();
+        let mut any_bridges_multiple_holes = false;
+        for child_idx in 0..polygons.len() {
+            if child_idx == parent_idx {
+                continue;
+            }
+            if !polygons[child_idx].interiors().is_empty() {
+                continue;
+            }
+            if polygons[child_idx].exterior() == polygons[parent_idx].exterior() {
+                continue;
+            }
+            let child_coords: Vec<(T, T)> = polygons[child_idx]
+                .exterior()
+                .0
+                .iter()
+                .map(|c| (c.x, c.y))
+                .collect();
+            let shares_vertex = child_coords.iter().any(|cv| {
+                parent_hole_coords.iter().any(|pv| pv.0 == cv.0 && pv.1 == cv.1)
+            });
+            if !shares_vertex {
+                continue;
+            }
+            let child_ip = match polygons[child_idx].interior_point() {
+                Some(p) => p,
+                None => continue,
+            };
+            if !parent_exterior_only.contains(&child_ip) {
+                continue;
+            }
+            // Count how many distinct holes this standalone shares vertices with.
+            let hole_hits: usize = hole_vertex_sets
+                .iter()
+                .filter(|hvs| {
+                    child_coords
+                        .iter()
+                        .any(|cv| hvs.iter().any(|hv| hv.0 == cv.0 && hv.1 == cv.1))
+                })
+                .count();
+            if hole_hits >= 2 {
+                any_bridges_multiple_holes = true;
+            }
+            connecting_standalone_indices.push(child_idx);
+        }
+
+        // Only merge when at least one standalone bridges 2+ different
+        // holes.  If every standalone only touches a single hole, there
+        // is nothing to merge and we would lose holes.
+        if connecting_standalone_indices.is_empty() || !any_bridges_multiple_holes {
+            continue;
+        }
+
+        // Collect all edges: parent holes + connecting standalone exteriors.
+        let mut all_lines: Vec<Line<T>> = Vec::new();
+        for hole in polygons[parent_idx].interiors() {
+            all_lines.extend(hole.lines());
+        }
+        for &child_idx in &connecting_standalone_indices {
+            all_lines.extend(polygons[child_idx].exterior().lines());
+        }
+
+        // Build graph and extract faces.
+        let snap_radius =
+            T::from(1e-10).unwrap_or(T::epsilon() * T::from(1024.0).unwrap_or(T::one()));
+        let noded_lines = nodify_lines(all_lines, snap_radius);
+        let graph = PolygonizerGraph::from_noded_lines(noded_lines);
+        let rings = graph.get_minimal_edge_rings();
+
+        // Find the largest ring (outer boundary of the merged holes).
+        let mut best_ring: Option<LineString<T>> = None;
+        let mut best_area = T::zero();
+        for ring in &rings {
+            if let Some(ls) = ring_to_valid_linestring(ring) {
+                let area = Polygon::new(ls.clone(), vec![]).unsigned_area();
+                if area > best_area {
+                    best_area = area;
+                    best_ring = Some(ls);
+                }
+            }
+        }
+
+        if let Some(merged_ring) = best_ring {
+            let candidate =
+                Polygon::new(polygons[parent_idx].exterior().clone(), vec![merged_ring])
+                    .orient(Direction::Default);
+            if candidate.is_valid() {
+                polygons[parent_idx] = candidate;
+            }
+        }
+    }
+
+    polygons
 }

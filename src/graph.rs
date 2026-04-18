@@ -139,6 +139,47 @@ fn ring_to_valid_linestring<T: GeoFloat>(ring: &[Edge<T>]) -> Option<LineString<
     Some(linestring)
 }
 
+/// Splits an edge ring at any repeated "from" node (pinch point).
+///
+/// When the left-face traversal visits the same node twice in one ring
+/// (a figure-8 or multi-lobed shape connected by single-point pinch
+/// vertices), this function breaks the ring into sub-rings, each of
+/// which forms a simple loop through the pinch node exactly once.
+/// The result is applied recursively so that rings with multiple pinch
+/// points are fully decomposed.
+fn split_edge_ring_at_pinch_points<T: GeoFloat>(ring: Vec<Edge<T>>) -> Vec<Vec<Edge<T>>> {
+    // Build a map: from-node → first position where we saw it.
+    let mut first_occurrence: BTreeMap<Node<T>, usize> = BTreeMap::new();
+    let mut split_at: Option<(usize, usize)> = None;
+
+    for (position, edge) in ring.iter().enumerate() {
+        if let Some(&first_position) = first_occurrence.get(&edge.from) {
+            split_at = Some((first_position, position));
+            break;
+        }
+        first_occurrence.insert(edge.from, position);
+    }
+
+    let (first_position, second_position) = match split_at {
+        Some(positions) => positions,
+        None => return vec![ring], // no repeated node, nothing to split
+    };
+
+    // ring[first_position..second_position] forms one sub-ring (the loop
+    // that starts and ends at the pinch node).
+    let inner_ring: Vec<Edge<T>> = ring[first_position..second_position].to_vec();
+
+    // The remainder is everything before + everything from second_position onward.
+    let mut outer_ring: Vec<Edge<T>> = ring[..first_position].to_vec();
+    outer_ring.extend_from_slice(&ring[second_position..]);
+
+    // Recurse on both halves in case there are additional pinch points.
+    let mut result = Vec::new();
+    result.extend(split_edge_ring_at_pinch_points(inner_ring));
+    result.extend(split_edge_ring_at_pinch_points(outer_ring));
+    result
+}
+
 #[derive(Debug)]
 pub(crate) struct PolygonizerGraph<T: GeoFloat> {
     nodes_to_outbound_edges: BTreeMap<Node<T>, BTreeSet<Edge<T>>>,
@@ -453,7 +494,14 @@ impl<T: GeoFloat> PolygonizerGraph<T> {
     {
         let edge_rings = self.get_minimal_edge_rings();
 
-        let valid_rings: Vec<_> = edge_rings
+        // Split any figure-8 rings at pinch-point nodes before the validity
+        // filter so that both sub-regions survive as separate polygons.
+        let split_rings: Vec<_> = edge_rings
+            .into_iter()
+            .flat_map(split_edge_ring_at_pinch_points)
+            .collect();
+
+        let valid_rings: Vec<_> = split_rings
             .into_iter()
             .filter_map(|ring| ring_to_valid_linestring(&ring))
             .collect();
@@ -466,16 +514,52 @@ impl<T: GeoFloat> PolygonizerGraph<T> {
             .filter(|polygon| polygon.is_valid())
             .collect();
 
-        MultiPolygon(
+        let stage_inferred_holes =
+            topology_cleanup::infer_parent_holes_when_output_has_no_holes(valid_polygons);
+
+        let stage_split_touching =
+            topology_cleanup::split_touching_boundary_polygons(stage_inferred_holes);
+
+        let stage_infer_contained =
+            topology_cleanup::infer_contained_standalone_polygons_as_holes(stage_split_touching);
+
+        let stage_remove_non_unique =
+            topology_cleanup::remove_non_unique_interior_points_for_touching_topology(
+                stage_infer_contained,
+            );
+
+        let stage_remove_redundant =
             topology_cleanup::remove_redundant_overlapping_standalone_polygons(
-                topology_cleanup::remove_non_unique_interior_points_for_touching_topology(
-                    topology_cleanup::split_touching_boundary_polygons(
-                        topology_cleanup::infer_parent_holes_when_output_has_no_holes(
-                            valid_polygons,
-                        ),
-                    ),
-                ),
-            ),
-        )
+                stage_remove_non_unique,
+            );
+
+        // Carve contained standalone polygons as holes of their parents.
+        // This handles "island" polygons that sit fully inside a larger
+        // polygon, whether or not the parent already has holes.
+        let stage_carve_holes =
+            topology_cleanup::carve_contained_standalones_as_holes(stage_remove_redundant);
+
+        // Second pass: after removal steps, re-assign standalone polygons
+        // as holes where appropriate (removal may have changed containment).
+        let stage_final_holes =
+            topology_cleanup::infer_contained_standalone_polygons_as_holes(stage_carve_holes);
+
+        // Merge touching holes: find standalone polygons that bridge existing
+        // holes at shared vertices and merge them into combined holes.
+        let stage_merge_holes =
+            topology_cleanup::merge_touching_holes_in_polygons(stage_final_holes);
+
+        // Second split pass: now that holes are merged, split polygons
+        // where the merged hole creates touching topology.
+        let stage_final_split =
+            topology_cleanup::split_touching_boundary_polygons(stage_merge_holes);
+
+        // Final carve pass: after all splitting and merging, some contained
+        // standalone polygons may no longer sit inside a hole.  Carve them
+        // into their containing parent to eliminate overlaps.
+        let stage_final_carve =
+            topology_cleanup::carve_contained_standalones_as_holes(stage_final_split);
+
+        MultiPolygon(stage_final_carve)
     }
 }
