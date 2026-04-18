@@ -1,3 +1,9 @@
+//! Sweep-line based noding for linework.
+//!
+//! The algorithm finds line intersections and collinear overlaps, inserts cut
+//! points on each source segment, splits each segment at those cut points, and
+//! returns a deduplicated set of noded sub-segments.
+
 use geo::{
     Coord, GeoFloat, Line, algorithm::sweep::Intersections, line_intersection::LineIntersection,
 };
