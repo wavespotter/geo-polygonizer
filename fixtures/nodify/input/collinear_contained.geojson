@@ -1,0 +1,7 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    { "type": "Feature", "properties": { "name": "long segment" }, "geometry": { "type": "LineString", "coordinates": [[0, 0], [6, 0]] } },
+    { "type": "Feature", "properties": { "name": "inner segment" }, "geometry": { "type": "LineString", "coordinates": [[1, 0], [3, 0]] } }
+  ]
+}

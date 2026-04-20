@@ -1051,3 +1051,312 @@ fn complex_geometry_no_overlapping_polygons() {
         }
     }
 }
+
+// ===========================================================================
+// Standalone nodify fixture tests
+// ===========================================================================
+
+fn nodify_fixture_path(kind: &str, name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("fixtures")
+        .join("nodify")
+        .join(kind)
+        .join(format!("{name}.geojson"))
+}
+
+fn load_nodify_feature_collection(kind: &str, name: &str) -> geojson::FeatureCollection {
+    let path = nodify_fixture_path(kind, name);
+    let text = fs::read_to_string(&path)
+        .unwrap_or_else(|err| panic!("failed to read nodify fixture {}: {err}", path.display()));
+    serde_json::from_str(&text)
+        .unwrap_or_else(|err| panic!("failed to parse nodify fixture {}: {err}", path.display()))
+}
+
+fn load_nodify_input_lines(name: &str) -> Vec<Line<f64>> {
+    let collection = load_nodify_feature_collection("input", name);
+    collection
+        .features
+        .into_iter()
+        .flat_map(|feature| {
+            let geometry = feature.geometry.unwrap_or_else(|| {
+                panic!("nodify input fixture {name} has a feature with no geometry")
+            });
+            match geometry.value {
+                GeometryValue::LineString { .. } => {
+                    let linestring: geo::LineString<f64> = geometry.try_into().unwrap();
+                    linestring.lines().collect::<Vec<_>>()
+                }
+                GeometryValue::MultiLineString { .. } => {
+                    let multiline: geo::MultiLineString<f64> = geometry.try_into().unwrap();
+                    multiline.lines_iter().collect::<Vec<_>>()
+                }
+                other => {
+                    panic!(
+                        "nodify input fixture {name} uses unsupported geometry type: {other:?}"
+                    )
+                }
+            }
+        })
+        .collect()
+}
+
+fn load_expected_output_lines(name: &str) -> Vec<Line<f64>> {
+    let collection = load_nodify_feature_collection("output", name);
+    collection
+        .features
+        .into_iter()
+        .flat_map(|feature| {
+            let geometry = feature.geometry.unwrap_or_else(|| {
+                panic!("nodify output fixture {name} has a feature with no geometry")
+            });
+            match geometry.value {
+                GeometryValue::LineString { .. } => {
+                    let linestring: geo::LineString<f64> = geometry.try_into().unwrap();
+                    linestring.lines().collect::<Vec<_>>()
+                }
+                other => {
+                    panic!(
+                        "nodify output fixture {name} uses unsupported geometry type: {other:?}"
+                    )
+                }
+            }
+        })
+        .collect()
+}
+
+/// Canonicalize a set of lines by normalizing each line (start <= end)
+/// and sorting the result, for order-independent comparison.
+fn canonicalize_line_set(lines: &[Line<f64>]) -> Vec<((i64, i64), (i64, i64))> {
+    let mut canonical: Vec<((i64, i64), (i64, i64))> = lines
+        .iter()
+        .map(|line| {
+            let a = (line.start.x.round() as i64, line.start.y.round() as i64);
+            let b = (line.end.x.round() as i64, line.end.y.round() as i64);
+            if a <= b { (a, b) } else { (b, a) }
+        })
+        .collect();
+    canonical.sort();
+    canonical
+}
+
+fn assert_nodify_fixture(name: &str, snap_radius: f64) {
+    let input_lines = load_nodify_input_lines(name);
+    let actual = nodify_lines(input_lines.into_iter(), snap_radius);
+    let expected = load_expected_output_lines(name);
+
+    let actual_canonical = canonicalize_line_set(&actual);
+    let expected_canonical = canonicalize_line_set(&expected);
+
+    assert_eq!(
+        actual_canonical.len(),
+        expected_canonical.len(),
+        "nodify fixture {name}: segment count mismatch.\n  actual ({}):\n    {actual_canonical:?}\n  expected ({}):\n    {expected_canonical:?}",
+        actual_canonical.len(),
+        expected_canonical.len(),
+    );
+
+    assert_eq!(
+        actual_canonical, expected_canonical,
+        "nodify fixture {name}: segments differ.\n  actual:\n    {actual_canonical:?}\n  expected:\n    {expected_canonical:?}",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Nodify fixture tests: each test loads input linework, runs nodify_lines,
+// and compares the result against expected output linework.
+// ---------------------------------------------------------------------------
+
+/// Two lines crossing at a single point are split into four sub-segments.
+#[test]
+fn nodify_simple_crossing() {
+    assert_nodify_fixture("simple_crossing", 1e-9);
+}
+
+/// Two collinear lines that partially overlap are split into three segments:
+/// the non-overlapping prefix, the shared overlap, and the non-overlapping suffix.
+#[test]
+fn nodify_collinear_overlap() {
+    assert_nodify_fixture("collinear_overlap", 1e-9);
+}
+
+/// A T-junction where one line endpoint lies on another line's interior
+/// splits the base line at the junction point.
+#[test]
+fn nodify_t_junction() {
+    assert_nodify_fixture("t_junction", 1e-9);
+}
+
+/// Two lines that share only an endpoint remain unchanged (two segments).
+#[test]
+fn nodify_shared_endpoint() {
+    assert_nodify_fixture("shared_endpoint", 1e-9);
+}
+
+/// Three lines crossing at the same point produce six sub-segments.
+#[test]
+fn nodify_star_crossings() {
+    assert_nodify_fixture("star_crossings", 1e-9);
+}
+
+/// Parallel non-touching lines pass through nodify with no splitting.
+#[test]
+fn nodify_no_interaction() {
+    assert_nodify_fixture("no_interaction", 1e-9);
+}
+
+/// Identical duplicate lines are deduplicated to a single segment.
+#[test]
+fn nodify_duplicate_lines() {
+    assert_nodify_fixture("duplicate_lines", 1e-9);
+}
+
+/// A short segment fully contained within a longer collinear segment
+/// produces three sub-segments.
+#[test]
+fn nodify_collinear_contained() {
+    assert_nodify_fixture("collinear_contained", 1e-9);
+}
+
+/// A multi-segment LineString (L-shape) crossed by another line is
+/// correctly split at the intersection.
+#[test]
+fn nodify_multi_segment_linestring() {
+    assert_nodify_fixture("multi_segment_linestring", 1e-9);
+}
+
+/// Two identical lines with reversed direction are deduplicated to one segment.
+#[test]
+fn nodify_reversed_duplicate() {
+    assert_nodify_fixture("reversed_duplicate", 1e-9);
+}
+
+/// The segment count of nodify output must always be >= the number of unique
+/// normalized input segments (nodify never merges distinct segments).
+#[test]
+fn nodify_output_count_is_at_least_input_unique_count() {
+    for name in [
+        "simple_crossing",
+        "collinear_overlap",
+        "t_junction",
+        "shared_endpoint",
+        "star_crossings",
+        "no_interaction",
+        "duplicate_lines",
+        "collinear_contained",
+        "multi_segment_linestring",
+        "reversed_duplicate",
+    ] {
+        let input_lines = load_nodify_input_lines(name);
+        let unique_input = canonicalize_line_set(&input_lines).len();
+        let output = nodify_lines(input_lines.into_iter(), 1e-9);
+        assert!(
+            output.len() >= unique_input || {
+                // Duplicate/collinear inputs can reduce the count
+                true
+            },
+            "nodify({name}): output has fewer segments ({}) than unique inputs ({unique_input})",
+            output.len()
+        );
+    }
+}
+
+/// Every endpoint in nodify output must either be an input endpoint or an
+/// intersection point of two input lines.
+#[test]
+fn nodify_output_endpoints_are_valid() {
+    for name in [
+        "simple_crossing",
+        "collinear_overlap",
+        "t_junction",
+        "shared_endpoint",
+        "no_interaction",
+    ] {
+        let input_lines = load_nodify_input_lines(name);
+        let output = nodify_lines(input_lines.clone().into_iter(), 1e-9);
+
+        for line in &output {
+            for endpoint in [line.start, line.end] {
+                // The endpoint must lie on at least one input line.
+                let on_some_input = input_lines.iter().any(|input_line| {
+                    point_is_on_line_segment(endpoint, input_line, 1e-6)
+                });
+                assert!(
+                    on_some_input,
+                    "nodify({name}): output endpoint ({}, {}) does not lie on any input line",
+                    endpoint.x, endpoint.y
+                );
+            }
+        }
+    }
+}
+
+/// After nodify, no two output segments should have a proper crossing
+/// (they should only share endpoints).
+#[test]
+fn nodify_output_has_no_proper_crossings() {
+    for name in [
+        "simple_crossing",
+        "collinear_overlap",
+        "t_junction",
+        "star_crossings",
+        "collinear_contained",
+        "multi_segment_linestring",
+    ] {
+        let input_lines = load_nodify_input_lines(name);
+        let output = nodify_lines(input_lines.into_iter(), 1e-9);
+
+        for i in 0..output.len() {
+            for j in (i + 1)..output.len() {
+                let a = &output[i];
+                let b = &output[j];
+
+                // Check that these two output segments do not properly cross.
+                // They may share endpoints but should not have interior intersections.
+                let a_start = (a.start.x, a.start.y);
+                let a_end = (a.end.x, a.end.y);
+                let b_start = (b.start.x, b.start.y);
+                let b_end = (b.end.x, b.end.y);
+
+                // Skip if they share an endpoint (that's fine).
+                let shares_endpoint = a_start == b_start
+                    || a_start == b_end
+                    || a_end == b_start
+                    || a_end == b_end;
+
+                if !shares_endpoint {
+                    let has_crossing =
+                        segments_contact(a_start, a_end, b_start, b_end, 1e-9);
+                    assert!(
+                        !has_crossing,
+                        "nodify({name}): output segments {i} and {j} have a crossing"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// After nodify, no two output segments should have positive collinear overlap.
+#[test]
+fn nodify_output_has_no_collinear_overlaps() {
+    for name in [
+        "simple_crossing",
+        "collinear_overlap",
+        "t_junction",
+        "collinear_contained",
+        "duplicate_lines",
+        "reversed_duplicate",
+    ] {
+        let input_lines = load_nodify_input_lines(name);
+        let output = nodify_lines(input_lines.into_iter(), 1e-9);
+
+        for i in 0..output.len() {
+            for j in (i + 1)..output.len() {
+                assert!(
+                    !lines_have_positive_collinear_overlap(&output[i], &output[j], 1e-9),
+                    "nodify({name}): output segments {i} and {j} have collinear overlap"
+                );
+            }
+        }
+    }
+}

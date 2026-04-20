@@ -1,0 +1,7 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    { "type": "Feature", "properties": { "name": "horizontal" }, "geometry": { "type": "LineString", "coordinates": [[0, 0], [4, 0]] } },
+    { "type": "Feature", "properties": { "name": "vertical stem" }, "geometry": { "type": "LineString", "coordinates": [[2, 0], [2, 3]] } }
+  ]
+}

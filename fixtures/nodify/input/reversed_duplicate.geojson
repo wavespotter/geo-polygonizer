@@ -1,0 +1,7 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    { "type": "Feature", "properties": { "name": "forward" }, "geometry": { "type": "LineString", "coordinates": [[0, 0], [3, 0]] } },
+    { "type": "Feature", "properties": { "name": "backward" }, "geometry": { "type": "LineString", "coordinates": [[3, 0], [0, 0]] } }
+  ]
+}
