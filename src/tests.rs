@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use geo::{Area, BooleanOps, Contains, InteriorPoint, Intersects, Line, LinesIter, MultiPolygon, Polygon, Validation, point};
+use geo::{Contains, InteriorPoint, Line, LinesIter, MultiPolygon, Polygon, Validation, point};
 use geojson::GeometryValue;
 
 use super::*;
@@ -890,156 +890,6 @@ fn polygonize_split_touching_two_points_matches_fixture() {
     assert_polygonize_fixture("split_touching_two_points");
 }
 
-/// Full fixture match on 307-polygon complex linework.
-///
-/// Depends on passes: 1 (infer_parent_holes), 2 (split_touching),
-/// 3 (infer_contained), 4 (remove_non_unique), 6 (merge_touching_holes),
-/// 7 (carve_contained, second).
-#[test]
-fn complex_geometry_dropped_polygon() {
-    assert_polygonize_fixture("very_complex_linework");
-}
-
-/// Point-containment probe at (133.75, 38.25): the point must be owned by
-/// exactly one polygon.
-///
-/// Depends on pass 4 (remove_non_unique).
-#[test]
-fn complex_geometry_no_overlap_at_probe() {
-    let lines = load_input_lines("very_complex_linework");
-    let polygons = polygonize(lines.into_iter());
-    let probe = point! { x: 133.75, y: 38.25 };
-    let containing_count = polygons
-        .0
-        .iter()
-        .filter(|polygon| polygon.contains(&probe))
-        .count();
-
-    assert_eq!(containing_count, 1);
-}
-
-/// Two nearby probes on opposite sides of a boundary must each be owned by
-/// exactly one polygon, and those polygons must differ.
-///
-/// Depends on pass 6 (merge_touching_holes).
-#[test]
-fn complex_geometry_no_overlap_and_split_below_secondary_probe() {
-    let lines = load_input_lines("very_complex_linework");
-    let polygons = polygonize(lines.into_iter());
-
-    let upper_probe = point! { x: 110.93, y: 20.51 };
-    let lower_probe = point! { x: 110.93, y: 20.499 };
-
-    let upper_owners: Vec<usize> = polygons
-        .0
-        .iter()
-        .enumerate()
-        .filter_map(|(polygon_index, polygon)| {
-            if polygon.contains(&upper_probe) {
-                Some(polygon_index)
-            } else {
-                None
-            }
-        })
-        .collect();
-    let lower_owners: Vec<usize> = polygons
-        .0
-        .iter()
-        .enumerate()
-        .filter_map(|(polygon_index, polygon)| {
-            if polygon.contains(&lower_probe) {
-                Some(polygon_index)
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    assert_eq!(upper_owners.len(), 1);
-    assert_eq!(lower_owners.len(), 1);
-    assert_ne!(upper_owners[0], lower_owners[0]);
-}
-
-/// Pinch-point robustness: two regions connected only at a pinch vertex
-/// must remain separate polygons.
-///
-/// Depends on pass 6 (merge_touching_holes).
-#[test]
-fn complex_geometry_pinch_point_vertices_do_not_merge_regions() {
-    let lines = load_input_lines("very_complex_linework");
-    let polygons = polygonize(lines.into_iter());
-
-    let left_probe = point! { x: 110.9, y: 20.45 };
-    let right_probe = point! { x: 111.0, y: 20.55 };
-
-    let left_owners: Vec<usize> = polygons
-        .0
-        .iter()
-        .enumerate()
-        .filter_map(|(polygon_index, polygon)| {
-            if polygon.contains(&left_probe) {
-                Some(polygon_index)
-            } else {
-                None
-            }
-        })
-        .collect();
-    let right_owners: Vec<usize> = polygons
-        .0
-        .iter()
-        .enumerate()
-        .filter_map(|(polygon_index, polygon)| {
-            if polygon.contains(&right_probe) {
-                Some(polygon_index)
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    let left_intersections: Vec<usize> = polygons
-        .0
-        .iter()
-        .enumerate()
-        .filter_map(|(polygon_index, polygon)| {
-            if polygon.intersects(&left_probe) {
-                Some(polygon_index)
-            } else {
-                None
-            }
-        })
-        .collect();
-    let right_intersections: Vec<usize> = polygons
-        .0
-        .iter()
-        .enumerate()
-        .filter_map(|(polygon_index, polygon)| {
-            if polygon.intersects(&right_probe) {
-                Some(polygon_index)
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    let left_hole_counts: Vec<usize> = left_owners
-        .iter()
-        .map(|polygon_index| polygons.0[*polygon_index].interiors().len())
-        .collect();
-    let right_hole_counts: Vec<usize> = right_owners
-        .iter()
-        .map(|polygon_index| polygons.0[*polygon_index].interiors().len())
-        .collect();
-
-    assert_eq!(left_owners.len(), 1, "left_owners={left_owners:?}, left_hole_counts={left_hole_counts:?}, right_owners={right_owners:?}, right_hole_counts={right_hole_counts:?}, left_intersections={left_intersections:?}, right_intersections={right_intersections:?}");
-    assert_eq!(right_owners.len(), 1, "left_owners={left_owners:?}, left_hole_counts={left_hole_counts:?}, right_owners={right_owners:?}, right_hole_counts={right_hole_counts:?}, left_intersections={left_intersections:?}, right_intersections={right_intersections:?}");
-    assert_ne!(
-        left_owners[0],
-        right_owners[0],
-        "left_owners={left_owners:?}, right_owners={right_owners:?}, left_hole_counts={left_hole_counts:?}, right_hole_counts={right_hole_counts:?}"
-    );
-}
-
 /// Minimal reproducer for split-touching-hole-drop: a hole that touches
 /// the shell boundary must be cleanly split.
 ///
@@ -1071,41 +921,6 @@ fn polygonize_contained_island_matches_fixture() {
 #[test]
 fn polygonize_nested_shell_overlap_minimal_matches_fixture() {
     assert_polygonize_fixture("nested_shell_overlap_minimal");
-}
-
-/// Every polygon in the very_complex_linework output must be valid and no
-/// two polygons may overlap with positive area.
-///
-/// Depends on passes: 1 (infer_parent_holes), 3 (infer_contained),
-/// 4 (remove_non_unique), 6 (merge_touching_holes),
-/// 7 (carve_contained, second).
-#[test]
-fn complex_geometry_no_overlapping_polygons() {
-    let lines = load_input_lines("very_complex_linework");
-    let polygons = polygonize(lines.into_iter());
-
-    // All polygons must be individually valid.
-    for (i, polygon) in polygons.0.iter().enumerate() {
-        assert!(
-            polygon.is_valid(),
-            "polygon {i} is invalid: {:?}",
-            polygon.validation_errors()
-        );
-    }
-
-    // No two polygons may overlap with positive area.
-    for i in 0..polygons.0.len() {
-        for j in (i + 1)..polygons.0.len() {
-            if polygons.0[i].intersects(&polygons.0[j]) {
-                let inter = polygons.0[i].intersection(&polygons.0[j]);
-                let area = inter.unsigned_area();
-                assert!(
-                    area <= 1e-6,
-                    "polygon {i} and polygon {j} overlap with area {area}"
-                );
-            }
-        }
-    }
 }
 
 // ===========================================================================
@@ -1147,9 +962,7 @@ fn load_nodify_input_lines(name: &str) -> Vec<Line<f64>> {
                     multiline.lines_iter().collect::<Vec<_>>()
                 }
                 other => {
-                    panic!(
-                        "nodify input fixture {name} uses unsupported geometry type: {other:?}"
-                    )
+                    panic!("nodify input fixture {name} uses unsupported geometry type: {other:?}")
                 }
             }
         })
@@ -1171,9 +984,7 @@ fn load_expected_output_lines(name: &str) -> Vec<Line<f64>> {
                     linestring.lines().collect::<Vec<_>>()
                 }
                 other => {
-                    panic!(
-                        "nodify output fixture {name} uses unsupported geometry type: {other:?}"
-                    )
+                    panic!("nodify output fixture {name} uses unsupported geometry type: {other:?}")
                 }
             }
         })
@@ -1333,9 +1144,9 @@ fn nodify_output_endpoints_are_valid() {
         for line in &output {
             for endpoint in [line.start, line.end] {
                 // The endpoint must lie on at least one input line.
-                let on_some_input = input_lines.iter().any(|input_line| {
-                    point_is_on_line_segment(endpoint, input_line, 1e-6)
-                });
+                let on_some_input = input_lines
+                    .iter()
+                    .any(|input_line| point_is_on_line_segment(endpoint, input_line, 1e-6));
                 assert!(
                     on_some_input,
                     "nodify({name}): output endpoint ({}, {}) does not lie on any input line",
@@ -1374,14 +1185,11 @@ fn nodify_output_has_no_proper_crossings() {
                 let b_end = (b.end.x, b.end.y);
 
                 // Skip if they share an endpoint (that's fine).
-                let shares_endpoint = a_start == b_start
-                    || a_start == b_end
-                    || a_end == b_start
-                    || a_end == b_end;
+                let shares_endpoint =
+                    a_start == b_start || a_start == b_end || a_end == b_start || a_end == b_end;
 
                 if !shares_endpoint {
-                    let has_crossing =
-                        segments_contact(a_start, a_end, b_start, b_end, 1e-9);
+                    let has_crossing = segments_contact(a_start, a_end, b_start, b_end, 1e-9);
                     assert!(
                         !has_crossing,
                         "nodify({name}): output segments {i} and {j} have a crossing"

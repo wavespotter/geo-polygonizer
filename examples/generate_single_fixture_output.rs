@@ -45,7 +45,9 @@ fn load_input_lines(name: &str) -> Vec<Line<f64>> {
 }
 
 fn main() {
-    let name = std::env::args().nth(1).unwrap_or_else(|| "minimal_secondary_probe_split".to_string());
+    let name = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "minimal_secondary_probe_split".to_string());
     let input_lines = load_input_lines(&name);
     let polygons = polygonize(input_lines);
 

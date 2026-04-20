@@ -549,13 +549,15 @@ pub(super) fn carve_contained_standalones_as_holes<T: GeoFloat + rstar::RTreeNum
             // same exterior already has holes — the parent is the "plain"
             // variant that should stay hole-free.
             if polygons[parent_index].interiors().is_empty() {
-                let sibling_has_holes = polygons.iter().enumerate().any(
-                    |(other_index, other_polygon)| {
-                        other_index != parent_index
-                            && other_polygon.exterior() == polygons[parent_index].exterior()
-                            && !other_polygon.interiors().is_empty()
-                    },
-                );
+                let sibling_has_holes =
+                    polygons
+                        .iter()
+                        .enumerate()
+                        .any(|(other_index, other_polygon)| {
+                            other_index != parent_index
+                                && other_polygon.exterior() == polygons[parent_index].exterior()
+                                && !other_polygon.interiors().is_empty()
+                        });
                 if sibling_has_holes {
                     continue;
                 }
@@ -564,9 +566,8 @@ pub(super) fn carve_contained_standalones_as_holes<T: GeoFloat + rstar::RTreeNum
             let mut new_holes = polygons[parent_index].interiors().to_vec();
             new_holes.push(child_exterior.clone());
 
-            let candidate =
-                Polygon::new(polygons[parent_index].exterior().clone(), new_holes)
-                    .orient(Direction::Default);
+            let candidate = Polygon::new(polygons[parent_index].exterior().clone(), new_holes)
+                .orient(Direction::Default);
             if candidate.is_valid() {
                 polygons[parent_index] = candidate;
                 break;
@@ -653,9 +654,11 @@ pub(super) fn infer_contained_standalone_polygons_as_holes<T: GeoFloat + rstar::
             }
 
             candidate_holes.push(child_exterior.clone());
-            let candidate_parent_polygon =
-                Polygon::new(polygons[parent_polygon_index].exterior().clone(), candidate_holes)
-                    .orient(Direction::Default);
+            let candidate_parent_polygon = Polygon::new(
+                polygons[parent_polygon_index].exterior().clone(),
+                candidate_holes,
+            )
+            .orient(Direction::Default);
             if !candidate_parent_polygon.is_valid() {
                 continue;
             }
@@ -686,8 +689,7 @@ pub(super) fn merge_touching_holes_in_polygons<T: GeoFloat + rstar::RTreeNum>(
             continue;
         }
 
-        let parent_exterior_only =
-            Polygon::new(polygons[parent_idx].exterior().clone(), vec![]);
+        let parent_exterior_only = Polygon::new(polygons[parent_idx].exterior().clone(), vec![]);
 
         // Build per-hole vertex lists.
         let hole_vertex_sets: Vec<Vec<(T, T)>> = polygons[parent_idx]
@@ -724,7 +726,9 @@ pub(super) fn merge_touching_holes_in_polygons<T: GeoFloat + rstar::RTreeNum>(
                 .map(|c| (c.x, c.y))
                 .collect();
             let shares_vertex = child_coords.iter().any(|cv| {
-                parent_hole_coords.iter().any(|pv| pv.0 == cv.0 && pv.1 == cv.1)
+                parent_hole_coords
+                    .iter()
+                    .any(|pv| pv.0 == cv.0 && pv.1 == cv.1)
             });
             if !shares_vertex {
                 continue;

@@ -519,23 +519,18 @@ impl<T: GeoFloat> PolygonizerGraph<T> {
         let polygons =
             topology_cleanup::infer_parent_holes_when_output_has_no_holes(valid_polygons);
         // Re-polygonize boundaries at degree>2 nodes to split touching polygons.
-        let polygons =
-            topology_cleanup::split_touching_boundary_polygons(polygons);
+        let polygons = topology_cleanup::split_touching_boundary_polygons(polygons);
         // Absorb tiny standalones sitting between holes into their parent polygon.
-        let polygons =
-            topology_cleanup::infer_contained_standalone_polygons_as_holes(polygons);
+        let polygons = topology_cleanup::infer_contained_standalone_polygons_as_holes(polygons);
         // Resolve overlapping polygon ownership by removing shared interior points.
         let polygons =
             topology_cleanup::remove_non_unique_interior_points_for_touching_topology(polygons);
         // Carve contained standalone polygons as holes of their enclosing parent.
-        let polygons =
-            topology_cleanup::carve_contained_standalones_as_holes(polygons);
+        let polygons = topology_cleanup::carve_contained_standalones_as_holes(polygons);
         // Merge holes connected by bridge standalones into unified holes.
-        let polygons =
-            topology_cleanup::merge_touching_holes_in_polygons(polygons);
+        let polygons = topology_cleanup::merge_touching_holes_in_polygons(polygons);
         // Second carve pass to catch standalones revealed by merging.
-        let polygons =
-            topology_cleanup::carve_contained_standalones_as_holes(polygons);
+        let polygons = topology_cleanup::carve_contained_standalones_as_holes(polygons);
 
         MultiPolygon(polygons)
     }

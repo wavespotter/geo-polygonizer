@@ -176,8 +176,7 @@ pub(super) fn assign_shells_to_holes<T: GeoFloat + rstar::RTreeNum>(
             if hole_sorted == shell_sorted {
                 continue; // same vertex set = reverse of shell, skip
             }
-            let standalone =
-                Polygon::new(hole.clone(), vec![]).orient(Direction::Default);
+            let standalone = Polygon::new(hole.clone(), vec![]).orient(Direction::Default);
             if !polygons.contains(&standalone) {
                 polygons.push(standalone);
             }
