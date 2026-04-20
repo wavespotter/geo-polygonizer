@@ -514,52 +514,29 @@ impl<T: GeoFloat> PolygonizerGraph<T> {
             .filter(|polygon| polygon.is_valid())
             .collect();
 
-        let stage_inferred_holes =
+        // --- Topology cleanup pipeline (7 passes) ---
+        // Assign standalone polygons as holes of no-hole parents that contain them.
+        let polygons =
             topology_cleanup::infer_parent_holes_when_output_has_no_holes(valid_polygons);
+        // Re-polygonize boundaries at degree>2 nodes to split touching polygons.
+        let polygons =
+            topology_cleanup::split_touching_boundary_polygons(polygons);
+        // Absorb tiny standalones sitting between holes into their parent polygon.
+        let polygons =
+            topology_cleanup::infer_contained_standalone_polygons_as_holes(polygons);
+        // Resolve overlapping polygon ownership by removing shared interior points.
+        let polygons =
+            topology_cleanup::remove_non_unique_interior_points_for_touching_topology(polygons);
+        // Carve contained standalone polygons as holes of their enclosing parent.
+        let polygons =
+            topology_cleanup::carve_contained_standalones_as_holes(polygons);
+        // Merge holes connected by bridge standalones into unified holes.
+        let polygons =
+            topology_cleanup::merge_touching_holes_in_polygons(polygons);
+        // Second carve pass to catch standalones revealed by merging.
+        let polygons =
+            topology_cleanup::carve_contained_standalones_as_holes(polygons);
 
-        let stage_split_touching =
-            topology_cleanup::split_touching_boundary_polygons(stage_inferred_holes);
-
-        let stage_infer_contained =
-            topology_cleanup::infer_contained_standalone_polygons_as_holes(stage_split_touching);
-
-        let stage_remove_non_unique =
-            topology_cleanup::remove_non_unique_interior_points_for_touching_topology(
-                stage_infer_contained,
-            );
-
-        let stage_remove_redundant =
-            topology_cleanup::remove_redundant_overlapping_standalone_polygons(
-                stage_remove_non_unique,
-            );
-
-        // Carve contained standalone polygons as holes of their parents.
-        // This handles "island" polygons that sit fully inside a larger
-        // polygon, whether or not the parent already has holes.
-        let stage_carve_holes =
-            topology_cleanup::carve_contained_standalones_as_holes(stage_remove_redundant);
-
-        // Second pass: after removal steps, re-assign standalone polygons
-        // as holes where appropriate (removal may have changed containment).
-        let stage_final_holes =
-            topology_cleanup::infer_contained_standalone_polygons_as_holes(stage_carve_holes);
-
-        // Merge touching holes: find standalone polygons that bridge existing
-        // holes at shared vertices and merge them into combined holes.
-        let stage_merge_holes =
-            topology_cleanup::merge_touching_holes_in_polygons(stage_final_holes);
-
-        // Second split pass: now that holes are merged, split polygons
-        // where the merged hole creates touching topology.
-        let stage_final_split =
-            topology_cleanup::split_touching_boundary_polygons(stage_merge_holes);
-
-        // Final carve pass: after all splitting and merging, some contained
-        // standalone polygons may no longer sit inside a hole.  Carve them
-        // into their containing parent to eliminate overlaps.
-        let stage_final_carve =
-            topology_cleanup::carve_contained_standalones_as_holes(stage_final_split);
-
-        MultiPolygon(stage_final_carve)
+        MultiPolygon(polygons)
     }
 }

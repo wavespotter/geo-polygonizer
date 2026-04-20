@@ -1,4 +1,22 @@
 //! Topology cleanup passes applied after initial polygon extraction.
+//!
+//! The pipeline (defined in [`super::PolygonizerGraph::polygonize`]) runs
+//! these passes in order:
+//!
+//!  1. [`infer_parent_holes_when_output_has_no_holes`] — adopt standalone
+//!     polygons as holes of no-hole parents that fully contain them.
+//!  2. [`split_touching_boundary_polygons`] — re-polygonize boundaries at
+//!     degree>2 nodes to split touching polygons.
+//!  3. [`infer_contained_standalone_polygons_as_holes`] — absorb tiny
+//!     standalones sitting between existing holes into their parent.
+//!  4. [`remove_non_unique_interior_points_for_touching_topology`] — resolve
+//!     overlapping polygon ownership by removing the lesser claimant.
+//!  5. [`carve_contained_standalones_as_holes`] — carve island polygons as
+//!     holes of their enclosing parent (first call).
+//!  6. [`merge_touching_holes_in_polygons`] — merge holes connected by
+//!     bridge standalones into unified holes.
+//!  7. [`carve_contained_standalones_as_holes`] — second carve pass to catch
+//!     standalones revealed by merging.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -20,13 +38,6 @@ fn polygon_boundary_lines<T: GeoFloat>(polygon: &Polygon<T>) -> Vec<Line<T>> {
 fn lines_have_same_endpoints<T: GeoFloat>(first: &Line<T>, second: &Line<T>) -> bool {
     (first.start == second.start && first.end == second.end)
         || (first.start == second.end && first.end == second.start)
-}
-
-fn polygon_has_unique_boundary_segment<T: GeoFloat>(
-    polygons: &[Polygon<T>],
-    polygon_index: usize,
-) -> bool {
-    polygon_unique_boundary_segment_count(polygons, polygon_index) > 0
 }
 
 fn polygon_unique_boundary_segment_count<T: GeoFloat>(
@@ -64,6 +75,12 @@ fn polygons_share_any_boundary_segment<T: GeoFloat>(a: &Polygon<T>, b: &Polygon<
     })
 }
 
+/// When multiple polygons claim the same interior point, remove the lesser
+/// claimant.  The "owner" is chosen by most unique boundary segments first,
+/// then smallest area.  Polygons that share no boundary with the owner, or
+/// that fully contain the owner, are kept.
+///
+/// Iterates to a fixed point.
 pub(super) fn remove_non_unique_interior_points_for_touching_topology<
     T: GeoFloat + rstar::RTreeNum,
 >(
@@ -175,6 +192,9 @@ pub(super) fn remove_non_unique_interior_points_for_touching_topology<
     current_polygons
 }
 
+/// Re-polygonize each polygon's boundary whenever its boundary graph has
+/// degree>2 nodes (i.e. the boundary touches itself).  The polygon is
+/// replaced by the interior face sub-polygons.
 pub(super) fn split_touching_boundary_polygons<T: GeoFloat + rstar::RTreeNum>(
     polygons: Vec<Polygon<T>>,
 ) -> Vec<Polygon<T>> {
@@ -359,49 +379,13 @@ fn split_touching_boundary_polygon<T: GeoFloat + rstar::RTreeNum>(
     }
 }
 
-pub(super) fn remove_redundant_overlapping_standalone_polygons<T: GeoFloat>(
-    polygons: Vec<Polygon<T>>,
-) -> Vec<Polygon<T>> {
-    polygons
-        .iter()
-        .enumerate()
-        .filter_map(|(polygon_index, polygon)| {
-            if !polygon.interiors().is_empty() {
-                return Some(polygon.clone());
-            }
-
-            let interior_point = match polygon.interior_point() {
-                Some(point) => point,
-                None => return Some(polygon.clone()),
-            };
-
-            let is_redundant_overlap = polygons.iter().enumerate().any(|(other_index, other)| {
-                if other_index == polygon_index
-                    || other.exterior() == polygon.exterior()
-                    || other.interiors().is_empty()
-                {
-                    return false;
-                }
-                if !other.contains(&interior_point) {
-                    return false;
-                }
-                // Don't count it as redundant if the parent fully contains this polygon.
-                // That's simple containment, not redundant overlap.
-                let parent_contains_child = other.contains(polygon);
-                !parent_contains_child
-            });
-
-            if is_redundant_overlap
-                && !polygon_has_unique_boundary_segment(&polygons, polygon_index)
-            {
-                None
-            } else {
-                Some(polygon.clone())
-            }
-        })
-        .collect()
-}
-
+/// For each standalone polygon (no holes) that is contained by a parent
+/// polygon's exterior, and the parent has no explicitly-assigned holes yet,
+/// adopt the standalone as a hole of the smallest qualifying parent.
+///
+/// This handles the common case where the initial shell/hole assignment
+/// did not create a holed polygon because the inner ring was extracted as
+/// a standalone shell rather than a hole.
 pub(super) fn infer_parent_holes_when_output_has_no_holes<T: GeoFloat + rstar::RTreeNum>(
     polygons: Vec<Polygon<T>>,
 ) -> Vec<Polygon<T>> {
@@ -593,6 +577,10 @@ pub(super) fn carve_contained_standalones_as_holes<T: GeoFloat + rstar::RTreeNum
     polygons
 }
 
+/// Absorb tiny standalone polygons that sit between existing holes into
+/// their parent.  Only considers parents with ≥ 2 holes and standalones
+/// whose area is below a threshold or that have no unique boundary
+/// segments.
 pub(super) fn infer_contained_standalone_polygons_as_holes<T: GeoFloat + rstar::RTreeNum>(
     polygons: Vec<Polygon<T>>,
 ) -> Vec<Polygon<T>> {

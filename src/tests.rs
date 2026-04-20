@@ -6,6 +6,11 @@ use geojson::GeometryValue;
 
 use super::*;
 
+// ---------------------------------------------------------------------------
+// Nodify unit tests
+// ---------------------------------------------------------------------------
+
+/// Non-collapsing line endpoints should round-trip through nodify unchanged.
 #[test]
 fn nodify_preserves_first_seen_coordinates_when_not_collapsed() {
     let input = vec![geo::Line::new(
@@ -40,6 +45,8 @@ fn nodify_preserves_first_seen_coordinates_when_not_collapsed() {
     );
 }
 
+/// When two nearby points snap to the same quantised cell, the output
+/// should use the coordinate of whichever point was seen first.
 #[test]
 fn nodify_collapsed_points_use_first_seen_coordinate() {
     let first = geo::Coord {
@@ -240,45 +247,44 @@ fn canonicalize_multipolygon(
     polygons
 }
 
+// ---------------------------------------------------------------------------
+// Segment-intersection helpers (used by self-contact & pinch-contact checks)
+// ---------------------------------------------------------------------------
+
+fn orient_2d(a: (f64, f64), b: (f64, f64), c: (f64, f64)) -> f64 {
+    (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0)
+}
+
+fn point_on_segment(a: (f64, f64), b: (f64, f64), p: (f64, f64), epsilon: f64) -> bool {
+    let between = |v: f64, lo: f64, hi: f64| v >= lo.min(hi) - epsilon && v <= lo.max(hi) + epsilon;
+    between(p.0, a.0, b.0) && between(p.1, a.1, b.1)
+}
+
+fn segments_contact(
+    a1: (f64, f64),
+    a2: (f64, f64),
+    b1: (f64, f64),
+    b2: (f64, f64),
+    epsilon: f64,
+) -> bool {
+    let o1 = orient_2d(a1, a2, b1);
+    let o2 = orient_2d(a1, a2, b2);
+    let o3 = orient_2d(b1, b2, a1);
+    let o4 = orient_2d(b1, b2, a2);
+
+    let proper = (o1 > epsilon && o2 < -epsilon || o1 < -epsilon && o2 > epsilon)
+        && (o3 > epsilon && o4 < -epsilon || o3 < -epsilon && o4 > epsilon);
+    if proper {
+        return true;
+    }
+
+    (o1.abs() <= epsilon && point_on_segment(a1, a2, b1, epsilon))
+        || (o2.abs() <= epsilon && point_on_segment(a1, a2, b2, epsilon))
+        || (o3.abs() <= epsilon && point_on_segment(b1, b2, a1, epsilon))
+        || (o4.abs() <= epsilon && point_on_segment(b1, b2, a2, epsilon))
+}
+
 fn ring_has_self_contact(ring: &geo::LineString<f64>, epsilon: f64) -> bool {
-    fn orient(a: (f64, f64), b: (f64, f64), c: (f64, f64)) -> f64 {
-        (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0)
-    }
-
-    fn between(value: f64, left: f64, right: f64, epsilon: f64) -> bool {
-        let min_value = left.min(right) - epsilon;
-        let max_value = left.max(right) + epsilon;
-        value >= min_value && value <= max_value
-    }
-
-    fn on_segment(a: (f64, f64), b: (f64, f64), p: (f64, f64), epsilon: f64) -> bool {
-        between(p.0, a.0, b.0, epsilon) && between(p.1, a.1, b.1, epsilon)
-    }
-
-    fn segments_contact(
-        a1: (f64, f64),
-        a2: (f64, f64),
-        b1: (f64, f64),
-        b2: (f64, f64),
-        epsilon: f64,
-    ) -> bool {
-        let o1 = orient(a1, a2, b1);
-        let o2 = orient(a1, a2, b2);
-        let o3 = orient(b1, b2, a1);
-        let o4 = orient(b1, b2, a2);
-
-        let proper = (o1 > epsilon && o2 < -epsilon || o1 < -epsilon && o2 > epsilon)
-            && (o3 > epsilon && o4 < -epsilon || o3 < -epsilon && o4 > epsilon);
-        if proper {
-            return true;
-        }
-
-        (o1.abs() <= epsilon && on_segment(a1, a2, b1, epsilon))
-            || (o2.abs() <= epsilon && on_segment(a1, a2, b2, epsilon))
-            || (o3.abs() <= epsilon && on_segment(b1, b2, a1, epsilon))
-            || (o4.abs() <= epsilon && on_segment(b1, b2, a2, epsilon))
-    }
-
     let mut coordinates: Vec<(f64, f64)> =
         ring.points().map(|point| (point.x(), point.y())).collect();
     if coordinates.first() == coordinates.last() {
@@ -325,44 +331,6 @@ fn ring_pair_has_contact(
     other_ring: &geo::LineString<f64>,
     epsilon: f64,
 ) -> bool {
-    fn orient(a: (f64, f64), b: (f64, f64), c: (f64, f64)) -> f64 {
-        (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0)
-    }
-
-    fn between(value: f64, left: f64, right: f64, epsilon: f64) -> bool {
-        let min_value = left.min(right) - epsilon;
-        let max_value = left.max(right) + epsilon;
-        value >= min_value && value <= max_value
-    }
-
-    fn on_segment(a: (f64, f64), b: (f64, f64), p: (f64, f64), epsilon: f64) -> bool {
-        between(p.0, a.0, b.0, epsilon) && between(p.1, a.1, b.1, epsilon)
-    }
-
-    fn segments_contact(
-        a1: (f64, f64),
-        a2: (f64, f64),
-        b1: (f64, f64),
-        b2: (f64, f64),
-        epsilon: f64,
-    ) -> bool {
-        let o1 = orient(a1, a2, b1);
-        let o2 = orient(a1, a2, b2);
-        let o3 = orient(b1, b2, a1);
-        let o4 = orient(b1, b2, a2);
-
-        let proper = (o1 > epsilon && o2 < -epsilon || o1 < -epsilon && o2 > epsilon)
-            && (o3 > epsilon && o4 < -epsilon || o3 < -epsilon && o4 > epsilon);
-        if proper {
-            return true;
-        }
-
-        (o1.abs() <= epsilon && on_segment(a1, a2, b1, epsilon))
-            || (o2.abs() <= epsilon && on_segment(a1, a2, b2, epsilon))
-            || (o3.abs() <= epsilon && on_segment(b1, b2, a1, epsilon))
-            || (o4.abs() <= epsilon && on_segment(b1, b2, a2, epsilon))
-    }
-
     let mut coordinates: Vec<(f64, f64)> =
         ring.points().map(|point| (point.x(), point.y())).collect();
     let mut other_coordinates: Vec<(f64, f64)> = other_ring
@@ -596,39 +564,48 @@ fn assert_polygonize_fixture_with_nodify_exact_region_polygons(
     );
 }
 
+// ---------------------------------------------------------------------------
+// Pre-pipeline tests (ring extraction, dangle/cut-edge removal, shell/hole
+// assignment).  These do not depend on any topology cleanup pass.
+// ---------------------------------------------------------------------------
+
+/// Base case: a single closed ring produces exactly one polygon shell.
 #[test]
 fn polygonize_simple_square_builds_single_shell() {
-    // Explores the base case: one closed ring should produce exactly one polygon shell.
     assert_polygonize_fixture("simple_square");
 }
 
+/// Dangle deletion: a spur attached to a valid ring must not create extra
+/// polygons.
 #[test]
 fn polygonize_discards_dangling_spur() {
-    // Explores dangle deletion: a spur attached to a valid ring must not create extra polygons.
     assert_polygonize_fixture("square_with_dangle");
 }
 
+/// Cut-edge deletion: a bridge connecting two independent rings is removed.
 #[test]
 fn polygonize_discards_cut_bridge_between_faces() {
-    // Explores cut-edge deletion: a bridge connecting two independent rings should be removed.
     assert_polygonize_fixture("two_squares_with_bridge");
 }
 
+/// Shell/hole assignment: a nested inner ring becomes a hole of the outer
+/// shell.
 #[test]
 fn polygonize_assigns_inner_ring_as_hole() {
-    // Explores shell-hole assignment: a nested inner ring should become a hole of the outer shell.
     assert_polygonize_fixture("donut_hole");
 }
 
+/// Duplicate-edge robustness: repeated coincident edges do not create extra
+/// polygons.
 #[test]
 fn polygonize_ignores_duplicate_boundary_segments() {
-    // Explores duplicate-line robustness: repeated coincident edges should not create extra polygons.
     assert_polygonize_fixture("duplicate_boundary_segments");
 }
 
+/// Nodify stability: pre-noded inputs polygonize identically with or without
+/// a nodify pre-pass.
 #[test]
 fn polygonize_with_nodify_preserves_pre_noded_fixture_results() {
-    // Explores nodify stability: pre-noded inputs should polygonize identically with or without a nodify pre-pass.
     for name in [
         "simple_square",
         "square_with_dangle",
@@ -640,16 +617,22 @@ fn polygonize_with_nodify_preserves_pre_noded_fixture_results() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Noding tests
+// ---------------------------------------------------------------------------
+
+/// Interior line intersections only produce a face after nodify splits the
+/// crossing segments.
 #[test]
 fn polygonize_crossing_lines_requires_nodify_to_form_face() {
-    // Explores noding requirement: interior line intersections should only produce a face after nodify splits crossing segments.
     assert_polygonize_fixture_with_output_dir("noding_required_crossing_lines", "output_raw");
     assert_polygonize_fixture_with_nodify("noding_required_crossing_lines", 1e-9, "output_nodify");
 }
 
+/// Partially overlapping collinear edges only close a face after nodify
+/// splits at the overlap endpoints.
 #[test]
 fn polygonize_collinear_overlap_requires_nodify_to_form_face() {
-    // Explores collinear overlap noding: partially overlapping collinear edges should only close a face after nodify splits overlap endpoints.
     assert_polygonize_fixture_with_output_dir("collinear_overlap_requires_nodify", "output_raw");
     assert_polygonize_fixture_with_nodify(
         "collinear_overlap_requires_nodify",
@@ -658,15 +641,21 @@ fn polygonize_collinear_overlap_requires_nodify_to_form_face() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Shell/hole hierarchy & nesting tests
+// ---------------------------------------------------------------------------
+
+/// Multi-level shell-hole structure: nested rings produce outer-with-hole,
+/// middle-with-hole, and innermost standalone polygon.
 #[test]
 fn polygonize_multi_level_nesting_retains_nested_hole_hierarchy() {
-    // Explores multi-level shell-hole structure: nested rings should produce outer-with-hole, middle-with-hole, and innermost standalone polygon.
     assert_polygonize_fixture("multi_level_nesting");
 }
 
+/// Overlap partitioning: overlapping inputs are noded into one polygon per
+/// distinct overlap region.
 #[test]
 fn polygonize_venn_overlaps_split_into_distinct_regions() {
-    // Explores overlap partitioning: overlapping polygon inputs should be noded into one polygon per distinct overlap region.
     assert_polygonize_fixture_with_nodify_exact_region_polygons(
         "venn_three_overlapping_rectangles",
         1e-9,
@@ -674,21 +663,48 @@ fn polygonize_venn_overlaps_split_into_distinct_regions() {
     );
 }
 
+/// Standalone-hole logic in shell assignment: a hole ring that cannot be
+/// assigned to any shell is surfaced as a standalone polygon.
 #[test]
 fn polygonize_failed_hole_matches_fixture() {
     assert_polygonize_fixture("failed_hole");
 }
 
+// ---------------------------------------------------------------------------
+// Topology cleanup pipeline tests
+//
+// The 7-pass cleanup pipeline is:
+//   1. infer_parent_holes_when_output_has_no_holes
+//   2. split_touching_boundary_polygons
+//   3. infer_contained_standalone_polygons_as_holes
+//   4. remove_non_unique_interior_points_for_touching_topology
+//   5. carve_contained_standalones_as_holes            (first)
+//   6. merge_touching_holes_in_polygons
+//   7. carve_contained_standalones_as_holes            (second)
+//
+// "Depends on pass N" below means the test fails when that pass is removed
+// from the pipeline in isolation.  Tests without such an annotation are
+// robust to any single-pass removal (they exercise earlier pipeline stages
+// or require multiple passes to cooperate).
+// ---------------------------------------------------------------------------
+
+/// Overlap ownership with touching holes: verifies correct polygon output
+/// against a larger probe fixture.
 #[test]
 fn polygonize_touching_hole_overlap_ownership_probe_matches_fixture() {
     assert_polygonize_fixture("touching_hole_overlap_ownership_probe");
 }
 
+/// Overlap ownership with touching holes: minimal reproducer.
 #[test]
 fn polygonize_touching_hole_overlap_ownership_minimal_matches_fixture() {
     assert_polygonize_fixture("touching_hole_overlap_ownership_minimal");
 }
 
+/// Structural invariants on the touching-hole overlap fixture: every
+/// polygon's interior point is owned by exactly one polygon, no polygon
+/// has pinch/self-contact, and every input line appears on an output
+/// boundary.
 #[test]
 fn polygonize_touching_hole_overlap_ownership_minimal_invariants() {
     let lines = load_input_lines("touching_hole_overlap_ownership_minimal");
@@ -750,6 +766,8 @@ fn polygonize_touching_hole_overlap_ownership_minimal_invariants() {
     }
 }
 
+/// Validity filter: a hole ring that touches its shell's boundary at an
+/// edge (not just a vertex) must not produce an invalid polygon.
 #[test]
 fn polygonize_filters_invalid_polygon_from_touching_hole_assignment() {
     fn ring_lines(points: &[(f64, f64)]) -> Vec<Line<f64>> {
@@ -789,6 +807,8 @@ fn polygonize_filters_invalid_polygon_from_touching_hole_assignment() {
     assert!(polygons.0.iter().all(|polygon| polygon.is_valid()));
 }
 
+/// Nested shell overlap: a point inside a nested shell must be contained
+/// by exactly one polygon, not double-counted.
 #[test]
 fn polygonize_handles_nested_shell_overlap_without_double_containment() {
     let lines = load_input_lines("nested_shell_overlap_minimal");
@@ -803,11 +823,31 @@ fn polygonize_handles_nested_shell_overlap_without_double_containment() {
     assert_eq!(containing_count, 1);
 }
 
+/// Split-touching face splitting: a rectangle with a diamond hole whose
+/// vertices lie on two different exterior edges creates a polygon whose
+/// interior is disconnected.  Pass 2 re-polygonizes the boundary at the
+/// degree>2 nodes and splits the donut into two separate pentagons.
+///
+/// Depends on pass 2 (split_touching).
+#[test]
+fn polygonize_split_touching_two_points_matches_fixture() {
+    assert_polygonize_fixture("split_touching_two_points");
+}
+
+/// Full fixture match on 307-polygon complex linework.
+///
+/// Depends on passes: 1 (infer_parent_holes), 2 (split_touching),
+/// 3 (infer_contained), 4 (remove_non_unique), 6 (merge_touching_holes),
+/// 7 (carve_contained, second).
 #[test]
 fn complex_geometry_dropped_polygon() {
     assert_polygonize_fixture("very_complex_linework");
 }
 
+/// Point-containment probe at (133.75, 38.25): the point must be owned by
+/// exactly one polygon.
+///
+/// Depends on pass 4 (remove_non_unique).
 #[test]
 fn complex_geometry_no_overlap_at_probe() {
     let lines = load_input_lines("very_complex_linework");
@@ -822,6 +862,10 @@ fn complex_geometry_no_overlap_at_probe() {
     assert_eq!(containing_count, 1);
 }
 
+/// Two nearby probes on opposite sides of a boundary must each be owned by
+/// exactly one polygon, and those polygons must differ.
+///
+/// Depends on pass 6 (merge_touching_holes).
 #[test]
 fn complex_geometry_no_overlap_and_split_below_secondary_probe() {
     let lines = load_input_lines("very_complex_linework");
@@ -860,6 +904,10 @@ fn complex_geometry_no_overlap_and_split_below_secondary_probe() {
     assert_ne!(upper_owners[0], lower_owners[0]);
 }
 
+/// Pinch-point robustness: two regions connected only at a pinch vertex
+/// must remain separate polygons.
+///
+/// Depends on pass 6 (merge_touching_holes).
 #[test]
 fn complex_geometry_pinch_point_vertices_do_not_merge_regions() {
     let lines = load_input_lines("very_complex_linework");
@@ -936,28 +984,45 @@ fn complex_geometry_pinch_point_vertices_do_not_merge_regions() {
     );
 }
 
+/// Minimal reproducer for split-touching-hole-drop: a hole that touches
+/// the shell boundary must be cleanly split.
+///
+/// Depends on passes: 3 (infer_contained), 7 (carve_contained, second).
 #[test]
 fn polygonize_split_touching_hole_drop_minimal_matches_fixture() {
     assert_polygonize_fixture("split_touching_hole_drop_minimal");
 }
 
+/// Overlap ownership area priority: when multiple shells claim a polygon,
+/// the smallest enclosing shell wins.
+///
+/// Depends on passes: 1 (infer_parent_holes), 4 (remove_non_unique),
+/// 5 (carve_contained, first), 6 (merge_touching_holes).
 #[test]
 fn polygonize_ownership_area_priority_enclosing_shell_minimal_matches_fixture() {
     assert_polygonize_fixture("ownership_area_priority_enclosing_shell_minimal");
 }
 
+/// Contained island: a standalone polygon fully inside a larger polygon
+/// is carved as a hole.
 #[test]
 fn polygonize_contained_island_matches_fixture() {
     assert_polygonize_fixture("contained_island");
 }
 
+/// Nested shell overlap: overlapping shells with shared boundaries resolve
+/// to non-overlapping polygons.
 #[test]
 fn polygonize_nested_shell_overlap_minimal_matches_fixture() {
     assert_polygonize_fixture("nested_shell_overlap_minimal");
 }
 
-/// Every polygon in the very_complex_linework output must be valid and no two
-/// polygons may overlap with positive area.
+/// Every polygon in the very_complex_linework output must be valid and no
+/// two polygons may overlap with positive area.
+///
+/// Depends on passes: 1 (infer_parent_holes), 3 (infer_contained),
+/// 4 (remove_non_unique), 6 (merge_touching_holes),
+/// 7 (carve_contained, second).
 #[test]
 fn complex_geometry_no_overlapping_polygons() {
     let lines = load_input_lines("very_complex_linework");
