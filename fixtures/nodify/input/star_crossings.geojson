@@ -1,0 +1,8 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    { "type": "Feature", "properties": { "name": "horizontal" }, "geometry": { "type": "LineString", "coordinates": [[0, 2], [4, 2]] } },
+    { "type": "Feature", "properties": { "name": "vertical" }, "geometry": { "type": "LineString", "coordinates": [[2, 0], [2, 4]] } },
+    { "type": "Feature", "properties": { "name": "diagonal" }, "geometry": { "type": "LineString", "coordinates": [[0, 0], [4, 4]] } }
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    { "type": "Feature", "properties": { "name": "first copy" }, "geometry": { "type": "LineString", "coordinates": [[0, 0], [3, 0]] } },
+    { "type": "Feature", "properties": { "name": "second copy" }, "geometry": { "type": "LineString", "coordinates": [[0, 0], [3, 0]] } }
+  ]
+}

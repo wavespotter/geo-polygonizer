@@ -1,0 +1,7 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    { "type": "Feature", "properties": { "name": "left segment" }, "geometry": { "type": "LineString", "coordinates": [[0, 0], [2, 0]] } },
+    { "type": "Feature", "properties": { "name": "right segment" }, "geometry": { "type": "LineString", "coordinates": [[2, 0], [4, 0]] } }
+  ]
+}

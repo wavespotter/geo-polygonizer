@@ -1,0 +1,19 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    { "type": "Feature", "properties": { "name": "outer bottom" }, "geometry": { "type": "LineString", "coordinates": [[0, 0], [20, 0]] } },
+    { "type": "Feature", "properties": { "name": "outer right" }, "geometry": { "type": "LineString", "coordinates": [[20, 0], [20, 20]] } },
+    { "type": "Feature", "properties": { "name": "outer top" }, "geometry": { "type": "LineString", "coordinates": [[20, 20], [0, 20]] } },
+    { "type": "Feature", "properties": { "name": "outer left" }, "geometry": { "type": "LineString", "coordinates": [[0, 20], [0, 0]] } },
+
+    { "type": "Feature", "properties": { "name": "hole bottom" }, "geometry": { "type": "LineString", "coordinates": [[3, 3], [10, 3]] } },
+    { "type": "Feature", "properties": { "name": "hole right" }, "geometry": { "type": "LineString", "coordinates": [[10, 3], [10, 10]] } },
+    { "type": "Feature", "properties": { "name": "hole top" }, "geometry": { "type": "LineString", "coordinates": [[10, 10], [3, 10]] } },
+    { "type": "Feature", "properties": { "name": "hole left" }, "geometry": { "type": "LineString", "coordinates": [[3, 10], [3, 3]] } },
+
+    { "type": "Feature", "properties": { "name": "island bottom" }, "geometry": { "type": "LineString", "coordinates": [[13, 13], [18, 13]] } },
+    { "type": "Feature", "properties": { "name": "island right" }, "geometry": { "type": "LineString", "coordinates": [[18, 13], [18, 18]] } },
+    { "type": "Feature", "properties": { "name": "island top" }, "geometry": { "type": "LineString", "coordinates": [[18, 18], [13, 18]] } },
+    { "type": "Feature", "properties": { "name": "island left" }, "geometry": { "type": "LineString", "coordinates": [[13, 18], [13, 13]] } }
+  ]
+}
