@@ -663,6 +663,62 @@ fn polygonize_venn_overlaps_split_into_distinct_regions() {
     );
 }
 
+/// Hole assignment doesn't inadvertently delete polygons.
+#[test]
+fn polygonize_invalid_hole_assignment() {
+    assert_polygonize_fixture("invalid_hole_assignment");
+}
+
+/// The specific probe point that was lost before the same-envelope hole
+/// recovery fix must be contained by exactly one output polygon, every
+/// polygon must be valid, and no two polygons may share an interior point.
+#[test]
+fn polygonize_invalid_hole_assignment_invariants() {
+    let lines = load_input_lines("invalid_hole_assignment");
+    let polygons = polygonize(lines.into_iter());
+
+    // The previously-dropped polygon must contain this probe.
+    let probe = point! { x: 70.5, y: -47.95 };
+    let probe_owners: Vec<usize> = polygons
+        .0
+        .iter()
+        .enumerate()
+        .filter_map(|(i, p)| if p.contains(&probe) { Some(i) } else { None })
+        .collect();
+    assert_eq!(
+        probe_owners.len(),
+        1,
+        "probe (70.5, -47.95) should be owned by exactly 1 polygon, got {probe_owners:?}"
+    );
+
+    // All polygons must be valid.
+    for (i, polygon) in polygons.0.iter().enumerate() {
+        assert!(
+            polygon.is_valid(),
+            "polygon {i} is invalid: {:?}",
+            polygon.validation_errors()
+        );
+    }
+
+    // Each polygon's interior point must be owned by exactly one polygon.
+    for (i, polygon) in polygons.0.iter().enumerate() {
+        let ip = polygon
+            .interior_point()
+            .unwrap_or_else(|| panic!("polygon {i} has no interior point"));
+        let owners: Vec<usize> = polygons
+            .0
+            .iter()
+            .enumerate()
+            .filter_map(|(j, p)| if p.contains(&ip) { Some(j) } else { None })
+            .collect();
+        assert_eq!(
+            owners.len(),
+            1,
+            "polygon {i} interior point owned by {owners:?}, expected exactly 1"
+        );
+    }
+}
+
 /// Standalone-hole logic in shell assignment: a hole ring that cannot be
 /// assigned to any shell is surfaced as a standalone polygon.
 #[test]
