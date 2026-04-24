@@ -369,7 +369,23 @@ fn split_touching_boundary_polygon<T: GeoFloat + rstar::RTreeNum>(
     let deduplicated_faces = deduplicate_faces_by_exterior(face_candidates);
     let split_faces = prune_container_faces(&deduplicated_faces);
 
-    if split_faces.len() >= 2 {
+    // Guard against dropping body area on holed polygons: if the polygon
+    // has holes, the body (exterior minus holes) is multiply-connected
+    // and generally not representable as minimal edge rings. The
+    // extracted sub-faces may only cover "pockets" between touching
+    // holes, silently discarding the bulk of the body. Require that a
+    // representative body point remain covered by the split faces.
+    let body_interior_covered = polygon.interiors().is_empty()
+        || polygon
+            .interior_point()
+            .map(|interior_point| {
+                split_faces
+                    .iter()
+                    .any(|face| face.contains(&interior_point))
+            })
+            .unwrap_or(false);
+
+    if split_faces.len() >= 2 && body_interior_covered {
         split_faces
     } else if polygon.interiors().is_empty() {
         split_no_hole_polygon_on_repeated_vertex(&polygon).unwrap_or_else(|| vec![polygon])
