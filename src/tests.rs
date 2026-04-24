@@ -138,6 +138,52 @@ fn load_input_lines(name: &str) -> Vec<Line<f64>> {
         .collect()
 }
 
+fn load_input_polygons(name: &str) -> Vec<Polygon<f64>> {
+    let collection = load_feature_collection("input", name);
+    let mut polygons = Vec::new();
+    for feature in collection.features {
+        let geometry = feature
+            .geometry
+            .unwrap_or_else(|| panic!("input fixture {name} has a feature with no geometry"));
+        match geometry.value {
+            GeometryValue::Polygon { .. } => {
+                let polygon: Polygon<f64> = geometry.try_into().unwrap();
+                polygons.push(polygon);
+            }
+            GeometryValue::MultiPolygon { .. } => {
+                let multi: MultiPolygon<f64> = geometry.try_into().unwrap();
+                polygons.extend(multi.0);
+            }
+            other => {
+                panic!("input fixture {name} uses unsupported polygon geometry type: {other:?}")
+            }
+        }
+    }
+    polygons
+}
+
+fn multipolygon_to_geojson_string(multi: &MultiPolygon<f64>) -> String {
+    let features = multi
+        .0
+        .iter()
+        .map(|polygon| geojson::Feature {
+            bbox: None,
+            geometry: Some(geojson::Geometry::new(GeometryValue::from(polygon))),
+            id: None,
+            properties: None,
+            foreign_members: None,
+        })
+        .collect();
+
+    let collection = geojson::FeatureCollection {
+        bbox: None,
+        features,
+        foreign_members: None,
+    };
+
+    serde_json::to_string_pretty(&collection).expect("serialize multipolygon to geojson")
+}
+
 fn load_expected_polygons_from(output_kind: &str, name: &str) -> MultiPolygon<f64> {
     let collection = load_feature_collection(output_kind, name);
     let mut polygons = Vec::new();
@@ -921,6 +967,82 @@ fn polygonize_contained_island_matches_fixture() {
 #[test]
 fn polygonize_nested_shell_overlap_minimal_matches_fixture() {
     assert_polygonize_fixture("nested_shell_overlap_minimal");
+}
+
+// ---------------------------------------------------------------------------
+// Large real-world bug reproducers
+// ---------------------------------------------------------------------------
+
+/// Coverage preservation through `nodify(1e-6) + polygonize`: any point
+/// that lies in the interior of some input polygon must still lie in the
+/// interior of exactly one output polygon.
+///
+/// The fixture is a 3-feature, 17-vertex reduction of a real-world
+/// MultiPolygon whose holes touch each other inside a single shell. On
+/// that shape, `split_touching_boundary_polygons` used to replace the
+/// shell with sub-face "pocket" rings extracted between touching holes,
+/// discarding the bulk of the body; this regression test pins the
+/// invariant at probe point (121.0, 23.5), which sits in the body.
+///
+/// Depends on pass 2 (split_touching).
+#[test]
+fn polygonize_preserves_enclosed_taiwan_polygon_minimal_matches_fixture() {
+    let taiwan_probe = point! { x: 121.0_f64, y: 23.5_f64 };
+
+    let input_polygons = load_input_polygons("taiwan_bug_minimal");
+    let input_owners: Vec<usize> = input_polygons
+        .iter()
+        .enumerate()
+        .filter_map(|(index, polygon)| {
+            if polygon.contains(&taiwan_probe) {
+                Some(index)
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert!(
+        !input_owners.is_empty(),
+        "pre-condition: Taiwan probe (121.0, 23.5) must be contained by at least one \
+         input polygon in the taiwan_bug_minimal fixture, got none"
+    );
+
+    let input_lines: Vec<_> = input_polygons
+        .iter()
+        .flat_map(|polygon| polygon.lines_iter())
+        .collect();
+    let noded_lines = nodify_lines(input_lines.into_iter(), 1e-6_f64);
+    let polygons = polygonize(noded_lines.into_iter());
+
+    eprintln!(
+        "polygonize output for taiwan_bug_minimal ({} polygons):\n{}",
+        polygons.0.len(),
+        multipolygon_to_geojson_string(&polygons)
+    );
+
+    let containing_polygons: Vec<usize> = polygons
+        .0
+        .iter()
+        .enumerate()
+        .filter_map(|(index, polygon)| {
+            if polygon.contains(&taiwan_probe) {
+                Some(index)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    assert_eq!(
+        containing_polygons.len(),
+        1,
+        "Taiwan probe (121.0, 23.5) is contained by {} input polygon(s) (indices {:?}) \
+         but by {} output polygon(s) (indices {:?})",
+        input_owners.len(),
+        input_owners,
+        containing_polygons.len(),
+        containing_polygons
+    );
 }
 
 // ===========================================================================
