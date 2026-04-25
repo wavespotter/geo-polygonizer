@@ -1,7 +1,9 @@
 //! Planar graph representation and polygon extraction pipeline.
 //!
 //! This module stores noded linework as directed edges sorted in CCW order per
-//! origin node, then traverses left faces to assemble minimal rings.
+//! origin node, then follows the JTS polygonizer ring traversal:
+//! `computeNextCWEdges`, `findLabeledEdgeRings`, and
+//! `convertMaximalToMinimalEdgeRings`.
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
@@ -11,7 +13,6 @@ use geo::{GeoFloat, Line, LineString, MultiPolygon, Polygon, Validation, coord};
 
 mod lines_iter;
 mod shell_assignment;
-mod topology_cleanup;
 
 use shell_assignment::assign_shells_to_holes;
 
@@ -207,63 +208,10 @@ impl<T: GeoFloat> PolygonizerGraph<T> {
             });
     }
 
-    fn compute_face_label_by_edge_index(
-        edge_count: usize,
-        next_left_face_edge_index_by_edge_index: &[Option<EdgeIndex>],
-    ) -> Vec<Option<FaceLabel>> {
-        let mut face_label_by_edge_index: Vec<Option<FaceLabel>> = vec![None; edge_count];
-        let mut next_face_label: FaceLabel = 0;
-
-        for start_edge_index in 0..edge_count {
-            if face_label_by_edge_index[start_edge_index].is_some() {
-                continue;
-            }
-
-            let mut traversal_path: Vec<EdgeIndex> = Vec::new();
-            let mut visit_position_by_edge_index: BTreeMap<EdgeIndex, usize> = BTreeMap::new();
-            let mut current_edge_index = start_edge_index;
-
-            loop {
-                if let Some(existing_face_label) = face_label_by_edge_index[current_edge_index] {
-                    for traversed_edge_index in traversal_path {
-                        face_label_by_edge_index[traversed_edge_index] = Some(existing_face_label);
-                    }
-                    break;
-                }
-
-                if let Some(&cycle_start_position) =
-                    visit_position_by_edge_index.get(&current_edge_index)
-                {
-                    let face_label = next_face_label;
-                    next_face_label += 1;
-
-                    for &traversed_edge_index in &traversal_path[cycle_start_position..] {
-                        face_label_by_edge_index[traversed_edge_index] = Some(face_label);
-                    }
-                    for &traversed_edge_index in &traversal_path[..cycle_start_position] {
-                        face_label_by_edge_index[traversed_edge_index] = Some(face_label);
-                    }
-                    break;
-                }
-
-                visit_position_by_edge_index.insert(current_edge_index, traversal_path.len());
-                traversal_path.push(current_edge_index);
-
-                current_edge_index =
-                    match next_left_face_edge_index_by_edge_index[current_edge_index] {
-                        Some(next_edge_index) => next_edge_index,
-                        None => break,
-                    };
-            }
-        }
-
-        face_label_by_edge_index
-    }
-
     fn collect_undirected_cut_edges(
         edges_by_index: &[Edge<T>],
         edge_to_index: &BTreeMap<Edge<T>, EdgeIndex>,
-        face_label_by_edge_index: &[Option<FaceLabel>],
+        edge_ring_label_by_edge_index: &[Option<FaceLabel>],
     ) -> BTreeSet<(Node<T>, Node<T>)> {
         let mut undirected_edges_to_remove: BTreeSet<(Node<T>, Node<T>)> = BTreeSet::new();
         for (edge_index, edge) in edges_by_index.iter().enumerate() {
@@ -275,8 +223,9 @@ impl<T: GeoFloat> PolygonizerGraph<T> {
                 .get(&edge.get_symmetrical())
                 .expect("symmetric edge index should exist");
 
-            if face_label_by_edge_index[edge_index]
-                == face_label_by_edge_index[symmetric_edge_index]
+            if edge_ring_label_by_edge_index[edge_index].is_some()
+                && edge_ring_label_by_edge_index[edge_index]
+                    == edge_ring_label_by_edge_index[symmetric_edge_index]
             {
                 undirected_edges_to_remove.insert((edge.from, edge.to));
             }
@@ -321,25 +270,28 @@ impl<T: GeoFloat> PolygonizerGraph<T> {
         (edges_by_index, edge_to_index)
     }
 
-    fn get_next_left_face_edge_index_by_edge_index(
+    /// Analogous to JTS `computeNextCWEdges`.
+    ///
+    /// For every directed edge entering a node, choose the next outgoing edge
+    /// in clockwise order around that node.
+    fn compute_next_cw_edges_by_edge_index(
         &self,
         edge_to_index: &BTreeMap<Edge<T>, usize>,
         edge_count: usize,
     ) -> Vec<Option<usize>> {
-        let mut next_left_face_edge_index_by_edge_index: Vec<Option<usize>> =
-            vec![None; edge_count];
+        let mut next_cw_edge_index_by_edge_index: Vec<Option<usize>> = vec![None; edge_count];
 
         for outbound_edges_at_node in self.nodes_to_outbound_edges.values() {
-            let ordered_outgoing_edges: Vec<_> = outbound_edges_at_node.iter().collect();
+            let ordered_outgoing_edges: Vec<_> = outbound_edges_at_node.iter().copied().collect();
             let ordered_edge_count = ordered_outgoing_edges.len();
             if ordered_edge_count == 0 {
                 continue;
             }
 
             for edge_index in 0..ordered_edge_count {
-                let reverse_edge = *ordered_outgoing_edges[edge_index];
-                let incoming_edge = reverse_edge.get_symmetrical();
-                let next_outgoing_edge = *ordered_outgoing_edges
+                let outgoing_edge = ordered_outgoing_edges[edge_index];
+                let incoming_edge = outgoing_edge.get_symmetrical();
+                let next_outgoing_edge = ordered_outgoing_edges
                     [(edge_index + ordered_edge_count - 1) % ordered_edge_count];
 
                 let incoming_edge_index = *edge_to_index
@@ -349,35 +301,266 @@ impl<T: GeoFloat> PolygonizerGraph<T> {
                     .get(&next_outgoing_edge)
                     .expect("next outgoing edge index should exist");
 
-                next_left_face_edge_index_by_edge_index[incoming_edge_index] =
+                next_cw_edge_index_by_edge_index[incoming_edge_index] =
                     Some(next_outgoing_edge_index);
             }
         }
 
-        next_left_face_edge_index_by_edge_index
+        next_cw_edge_index_by_edge_index
     }
 
-    /// For each directed edge (u -> v), returns the next directed edge along
-    /// the face on its left side when traversing the planar graph.
-    fn get_edge_to_next_left_face_edge_map(&self) -> BTreeMap<Edge<T>, Edge<T>> {
-        let (edges_by_index, edge_to_index) = self.get_edges_with_index_map();
-        let next_left_face_edge_index_by_edge_index =
-            self.get_next_left_face_edge_index_by_edge_index(&edge_to_index, edges_by_index.len());
+    /// Analogous to JTS `findDirEdgesInRing`.
+    fn find_dir_edges_in_ring(
+        start_edge_index: EdgeIndex,
+        next_edge_index_by_edge_index: &[Option<EdgeIndex>],
+    ) -> Vec<EdgeIndex> {
+        let mut ring = Vec::new();
+        let mut visited_edge_indices = BTreeSet::new();
+        let mut current_edge_index = start_edge_index;
 
-        let mut next_left_face_edge_by_edge = BTreeMap::new();
-        for (edge_index, next_edge_index) in next_left_face_edge_index_by_edge_index
-            .iter()
-            .copied()
-            .enumerate()
-        {
-            let Some(next_edge_index) = next_edge_index else {
-                continue;
+        loop {
+            if !visited_edge_indices.insert(current_edge_index) {
+                break;
+            }
+
+            ring.push(current_edge_index);
+
+            let Some(next_edge_index) = next_edge_index_by_edge_index[current_edge_index] else {
+                break;
             };
-            next_left_face_edge_by_edge
-                .insert(edges_by_index[edge_index], edges_by_index[next_edge_index]);
+            if next_edge_index == start_edge_index {
+                break;
+            }
+
+            current_edge_index = next_edge_index;
         }
 
-        next_left_face_edge_by_edge
+        ring
+    }
+
+    /// Analogous to JTS `findLabeledEdgeRings`.
+    fn find_labeled_edge_rings(
+        edge_count: usize,
+        next_edge_index_by_edge_index: &[Option<EdgeIndex>],
+    ) -> (Vec<Option<FaceLabel>>, Vec<EdgeIndex>) {
+        let mut edge_ring_label_by_edge_index = vec![None; edge_count];
+        let mut maximal_ring_start_edge_indices = Vec::new();
+        let mut next_edge_ring_label: FaceLabel = 0;
+
+        for start_edge_index in 0..edge_count {
+            if edge_ring_label_by_edge_index[start_edge_index].is_some() {
+                continue;
+            }
+
+            maximal_ring_start_edge_indices.push(start_edge_index);
+            let ring_edge_indices =
+                Self::find_dir_edges_in_ring(start_edge_index, next_edge_index_by_edge_index);
+            for edge_index in ring_edge_indices {
+                edge_ring_label_by_edge_index[edge_index] = Some(next_edge_ring_label);
+            }
+            next_edge_ring_label += 1;
+        }
+
+        (
+            edge_ring_label_by_edge_index,
+            maximal_ring_start_edge_indices,
+        )
+    }
+
+    fn get_degree_for_label(
+        &self,
+        node: Node<T>,
+        label: FaceLabel,
+        edge_to_index: &BTreeMap<Edge<T>, EdgeIndex>,
+        edge_ring_label_by_edge_index: &[Option<FaceLabel>],
+    ) -> usize {
+        self.nodes_to_outbound_edges
+            .get(&node)
+            .map(|outbound_edges_at_node| {
+                outbound_edges_at_node
+                    .iter()
+                    .filter(|edge| {
+                        let edge_index = *edge_to_index
+                            .get(edge)
+                            .expect("edge index should exist for graph edge");
+                        edge_ring_label_by_edge_index[edge_index] == Some(label)
+                    })
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
+    /// Analogous to JTS `findIntersectionNodes`.
+    fn find_intersection_nodes(
+        &self,
+        start_edge_index: EdgeIndex,
+        label: FaceLabel,
+        edges_by_index: &[Edge<T>],
+        edge_to_index: &BTreeMap<Edge<T>, EdgeIndex>,
+        edge_ring_label_by_edge_index: &[Option<FaceLabel>],
+        next_edge_index_by_edge_index: &[Option<EdgeIndex>],
+    ) -> BTreeSet<Node<T>> {
+        let mut intersection_nodes = BTreeSet::new();
+
+        for edge_index in
+            Self::find_dir_edges_in_ring(start_edge_index, next_edge_index_by_edge_index)
+        {
+            let node = edges_by_index[edge_index].from;
+            if self.get_degree_for_label(node, label, edge_to_index, edge_ring_label_by_edge_index)
+                > 1
+            {
+                intersection_nodes.insert(node);
+            }
+        }
+
+        intersection_nodes
+    }
+
+    /// Analogous to JTS `computeNextCCWEdges`.
+    ///
+    /// This rewires only the directed edges that have the supplied maximal-ring
+    /// label, which is what subdivides maximal edge rings into minimal rings.
+    fn compute_next_ccw_edges_at_node(
+        &self,
+        node: Node<T>,
+        label: FaceLabel,
+        edge_to_index: &BTreeMap<Edge<T>, EdgeIndex>,
+        edge_ring_label_by_edge_index: &[Option<FaceLabel>],
+        next_edge_index_by_edge_index: &mut [Option<EdgeIndex>],
+    ) {
+        let Some(outbound_edges_at_node) = self.nodes_to_outbound_edges.get(&node) else {
+            return;
+        };
+
+        let ordered_outgoing_edges: Vec<_> = outbound_edges_at_node.iter().copied().collect();
+        let mut first_out_edge_index = None;
+        let mut previous_in_edge_index = None;
+
+        for outgoing_edge in ordered_outgoing_edges.iter().rev() {
+            let outgoing_edge_index = *edge_to_index
+                .get(outgoing_edge)
+                .expect("outgoing edge index should exist");
+            let incoming_edge_index = *edge_to_index
+                .get(&outgoing_edge.get_symmetrical())
+                .expect("incoming edge index should exist");
+
+            let out_edge_index = (edge_ring_label_by_edge_index[outgoing_edge_index]
+                == Some(label))
+            .then_some(outgoing_edge_index);
+            let in_edge_index = (edge_ring_label_by_edge_index[incoming_edge_index] == Some(label))
+                .then_some(incoming_edge_index);
+
+            if out_edge_index.is_none() && in_edge_index.is_none() {
+                continue;
+            }
+
+            if let Some(in_edge_index) = in_edge_index {
+                previous_in_edge_index = Some(in_edge_index);
+            }
+
+            if let Some(out_edge_index) = out_edge_index {
+                if let Some(in_edge_index) = previous_in_edge_index.take() {
+                    next_edge_index_by_edge_index[in_edge_index] = Some(out_edge_index);
+                }
+                if first_out_edge_index.is_none() {
+                    first_out_edge_index = Some(out_edge_index);
+                }
+            }
+        }
+
+        if let Some(in_edge_index) = previous_in_edge_index {
+            if let Some(out_edge_index) = first_out_edge_index {
+                next_edge_index_by_edge_index[in_edge_index] = Some(out_edge_index);
+            }
+        }
+    }
+
+    /// Analogous to JTS `convertMaximalToMinimalEdgeRings`.
+    fn convert_maximal_to_minimal_edge_rings(
+        &self,
+        maximal_ring_start_edge_indices: &[EdgeIndex],
+        edges_by_index: &[Edge<T>],
+        edge_to_index: &BTreeMap<Edge<T>, EdgeIndex>,
+        edge_ring_label_by_edge_index: &[Option<FaceLabel>],
+        next_edge_index_by_edge_index: &mut [Option<EdgeIndex>],
+    ) {
+        for &start_edge_index in maximal_ring_start_edge_indices {
+            let Some(label) = edge_ring_label_by_edge_index[start_edge_index] else {
+                continue;
+            };
+
+            let intersection_nodes = self.find_intersection_nodes(
+                start_edge_index,
+                label,
+                edges_by_index,
+                edge_to_index,
+                edge_ring_label_by_edge_index,
+                next_edge_index_by_edge_index,
+            );
+
+            for node in intersection_nodes {
+                self.compute_next_ccw_edges_at_node(
+                    node,
+                    label,
+                    edge_to_index,
+                    edge_ring_label_by_edge_index,
+                    next_edge_index_by_edge_index,
+                );
+            }
+        }
+    }
+
+    /// Analogous to JTS `getEdgeRings`.
+    pub(super) fn get_edge_rings(&self) -> Vec<Vec<Edge<T>>> {
+        let (edges_by_index, edge_to_index) = self.get_edges_with_index_map();
+        let mut next_edge_index_by_edge_index =
+            self.compute_next_cw_edges_by_edge_index(&edge_to_index, edges_by_index.len());
+
+        let (edge_ring_label_by_edge_index, maximal_ring_start_edge_indices) =
+            Self::find_labeled_edge_rings(edges_by_index.len(), &next_edge_index_by_edge_index);
+
+        self.convert_maximal_to_minimal_edge_rings(
+            &maximal_ring_start_edge_indices,
+            &edges_by_index,
+            &edge_to_index,
+            &edge_ring_label_by_edge_index,
+            &mut next_edge_index_by_edge_index,
+        );
+
+        let mut rings = Vec::new();
+        let mut visited_edge_indices = BTreeSet::new();
+        for start_edge_index in 0..edges_by_index.len() {
+            if visited_edge_indices.contains(&start_edge_index) {
+                continue;
+            }
+
+            let mut ring = Vec::new();
+            let mut current_edge_index = start_edge_index;
+
+            loop {
+                if !visited_edge_indices.insert(current_edge_index) {
+                    break;
+                }
+
+                ring.push(edges_by_index[current_edge_index]);
+
+                let Some(next_edge_index) = next_edge_index_by_edge_index[current_edge_index]
+                else {
+                    break;
+                };
+                if next_edge_index == start_edge_index {
+                    break;
+                }
+
+                current_edge_index = next_edge_index;
+            }
+
+            if !ring.is_empty() {
+                rings.push(ring);
+            }
+        }
+
+        rings
     }
 
     /// Builds a directed graph from already-noded linework.
@@ -394,38 +577,6 @@ impl<T: GeoFloat> PolygonizerGraph<T> {
         Self {
             nodes_to_outbound_edges,
         }
-    }
-
-    pub(super) fn get_minimal_edge_rings(&self) -> Vec<Vec<Edge<T>>> {
-        let next_left_face_edge_by_edge = self.get_edge_to_next_left_face_edge_map();
-
-        let mut rings = Vec::new();
-        let mut visited_directed_edges = BTreeSet::new();
-        for edge in next_left_face_edge_by_edge.keys() {
-            if visited_directed_edges.contains(edge) {
-                continue;
-            }
-
-            let mut ring = vec![*edge];
-            visited_directed_edges.insert(*edge);
-            let mut next_edge = *edge;
-            loop {
-                next_edge = match next_left_face_edge_by_edge.get(&next_edge) {
-                    Some(next) => *next,
-                    _ => break,
-                };
-                if next_edge == *edge {
-                    break;
-                }
-                if visited_directed_edges.contains(&next_edge) {
-                    break;
-                }
-                ring.push(next_edge);
-                visited_directed_edges.insert(next_edge);
-            }
-            rings.push(ring);
-        }
-        rings
     }
 
     /// Iteratively removes dangling degree-1 chains from the graph.
@@ -471,28 +622,35 @@ impl<T: GeoFloat> PolygonizerGraph<T> {
     /// two directions belong to the same face.
     pub(crate) fn delete_cut_edges(&mut self) {
         let (edges_by_index, edge_to_index) = self.get_edges_with_index_map();
-        let next_left_face_edge_index_by_edge_index =
-            self.get_next_left_face_edge_index_by_edge_index(&edge_to_index, edges_by_index.len());
+        let next_cw_edge_index_by_edge_index =
+            self.compute_next_cw_edges_by_edge_index(&edge_to_index, edges_by_index.len());
 
-        let face_label_by_edge_index = Self::compute_face_label_by_edge_index(
-            edges_by_index.len(),
-            &next_left_face_edge_index_by_edge_index,
-        );
+        let (edge_ring_label_by_edge_index, _) =
+            Self::find_labeled_edge_rings(edges_by_index.len(), &next_cw_edge_index_by_edge_index);
         let undirected_edges_to_remove = Self::collect_undirected_cut_edges(
             &edges_by_index,
             &edge_to_index,
-            &face_label_by_edge_index,
+            &edge_ring_label_by_edge_index,
         );
         self.remove_undirected_edges(&undirected_edges_to_remove);
     }
 
-    /// Extracts valid rings, classifies shell/hole orientation, and applies
-    /// downstream topology cleanup passes.
+    /// Extracts valid rings, classifies shell/hole orientation, assigns
+    /// holes to shells (analogous to JTS `polygonize`), and applies
+    /// optional topology cleanup for self-touching boundaries.
+    ///
+    /// Shell/hole classification follows geo's OGC convention:
+    ///   CCW ring = shell (bounded face exterior)
+    ///   CW  ring = hole  (reverse-face / interior ring)
+    ///
+    /// This matches JTS's `computeHole()` adapted for OGC winding:
+    /// JTS uses CW-exterior convention; geo-rust uses CCW-exterior,
+    /// so CCW=shell here.
     pub(crate) fn polygonize(&self) -> MultiPolygon<T>
     where
         T: rstar::RTreeNum,
     {
-        let edge_rings = self.get_minimal_edge_rings();
+        let edge_rings = self.get_edge_rings();
 
         // Split any figure-8 rings at pinch-point nodes before the validity
         // filter so that both sub-regions survive as separate polygons.
@@ -506,32 +664,17 @@ impl<T: GeoFloat> PolygonizerGraph<T> {
             .filter_map(|ring| ring_to_valid_linestring(&ring))
             .collect();
 
-        let (valid_holes, valid_shells): (Vec<_>, Vec<_>) =
+        // Analogous to JTS `findShellsAndHoles` — classify by winding.
+        // In geo's OGC convention: CCW = shell (exterior), CW = hole.
+        let (valid_shells, valid_holes): (Vec<_>, Vec<_>) =
             valid_rings.into_iter().partition(|ring| ring.is_ccw());
 
+        // Analogous to JTS `assignHolesToShells` + `extractPolygons`.
         let valid_polygons: Vec<_> = assign_shells_to_holes(valid_shells, valid_holes)
             .into_iter()
             .filter(|polygon| polygon.is_valid())
             .collect();
 
-        // --- Topology cleanup pipeline (7 passes) ---
-        // Assign standalone polygons as holes of no-hole parents that contain them.
-        let polygons =
-            topology_cleanup::infer_parent_holes_when_output_has_no_holes(valid_polygons);
-        // Re-polygonize boundaries at degree>2 nodes to split touching polygons.
-        let polygons = topology_cleanup::split_touching_boundary_polygons(polygons);
-        // Absorb tiny standalones sitting between holes into their parent polygon.
-        let polygons = topology_cleanup::infer_contained_standalone_polygons_as_holes(polygons);
-        // Resolve overlapping polygon ownership by removing shared interior points.
-        let polygons =
-            topology_cleanup::remove_non_unique_interior_points_for_touching_topology(polygons);
-        // Carve contained standalone polygons as holes of their enclosing parent.
-        let polygons = topology_cleanup::carve_contained_standalones_as_holes(polygons);
-        // Merge holes connected by bridge standalones into unified holes.
-        let polygons = topology_cleanup::merge_touching_holes_in_polygons(polygons);
-        // Second carve pass to catch standalones revealed by merging.
-        let polygons = topology_cleanup::carve_contained_standalones_as_holes(polygons);
-
-        MultiPolygon(polygons)
+        MultiPolygon(valid_polygons)
     }
 }

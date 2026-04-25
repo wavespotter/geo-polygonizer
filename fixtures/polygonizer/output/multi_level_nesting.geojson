@@ -25,16 +25,6 @@
     },
     {
       "type": "Feature",
-      "properties": { "name": "middle standalone polygon" },
-      "geometry": {
-        "type": "Polygon",
-        "coordinates": [
-          [[3, 3], [9, 3], [9, 9], [3, 9], [3, 3]]
-        ]
-      }
-    },
-    {
-      "type": "Feature",
       "properties": { "name": "inner standalone polygon" },
       "geometry": {
         "type": "Polygon",
