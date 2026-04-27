@@ -162,28 +162,6 @@ fn load_input_polygons(name: &str) -> Vec<Polygon<f64>> {
     polygons
 }
 
-fn multipolygon_to_geojson_string(multi: &MultiPolygon<f64>) -> String {
-    let features = multi
-        .0
-        .iter()
-        .map(|polygon| geojson::Feature {
-            bbox: None,
-            geometry: Some(geojson::Geometry::new(GeometryValue::from(polygon))),
-            id: None,
-            properties: None,
-            foreign_members: None,
-        })
-        .collect();
-
-    let collection = geojson::FeatureCollection {
-        bbox: None,
-        features,
-        foreign_members: None,
-    };
-
-    serde_json::to_string_pretty(&collection).expect("serialize multipolygon to geojson")
-}
-
 fn load_expected_polygons_from(output_kind: &str, name: &str) -> MultiPolygon<f64> {
     let collection = load_feature_collection(output_kind, name);
     let mut polygons = Vec::new();
@@ -773,21 +751,7 @@ fn polygonize_failed_hole_matches_fixture() {
 }
 
 // ---------------------------------------------------------------------------
-// Topology cleanup pipeline tests
-//
-// The 7-pass cleanup pipeline is:
-//   1. infer_parent_holes_when_output_has_no_holes
-//   2. split_touching_boundary_polygons
-//   3. infer_contained_standalone_polygons_as_holes
-//   4. remove_non_unique_interior_points_for_touching_topology
-//   5. carve_contained_standalones_as_holes            (first)
-//   6. merge_touching_holes_in_polygons
-//   7. carve_contained_standalones_as_holes            (second)
-//
-// "Depends on pass N" below means the test fails when that pass is removed
-// from the pipeline in isolation.  Tests without such an annotation are
-// robust to any single-pass removal (they exercise earlier pipeline stages
-// or require multiple passes to cooperate).
+// Complex topology tests
 // ---------------------------------------------------------------------------
 
 /// Overlap ownership with touching holes: verifies correct polygon output
@@ -926,20 +890,28 @@ fn polygonize_handles_nested_shell_overlap_without_double_containment() {
 }
 
 /// Split-touching face splitting: a rectangle with a diamond hole whose
-/// vertices lie on two different exterior edges creates a polygon whose
-/// interior is disconnected.  Pass 2 re-polygonizes the boundary at the
-/// degree>2 nodes and splits the donut into two separate pentagons.
-///
-/// Depends on pass 2 (split_touching).
+/// vertices lie on two different exterior edges.  When the input is
+/// pre-nodified (splitting the square edges at the diamond touch points),
+/// the graph naturally produces three face polygons: two pentagons and
+/// the diamond.
 #[test]
 fn polygonize_split_touching_two_points_matches_fixture() {
-    assert_polygonize_fixture("split_touching_two_points");
+    let input_lines = load_input_lines("split_touching_two_points");
+    let noded_lines = nodify_lines(input_lines.into_iter(), 1e-10);
+    let actual = polygonize(noded_lines);
+    let expected = load_expected_polygons_from("output", "split_touching_two_points");
+
+    let actual_canonical = canonicalize_multipolygon(&actual);
+    let expected_canonical = canonicalize_multipolygon(&expected);
+
+    assert_eq!(
+        actual_canonical, expected_canonical,
+        "fixture mismatch: split_touching_two_points"
+    );
 }
 
 /// Minimal reproducer for split-touching-hole-drop: a hole that touches
 /// the shell boundary must be cleanly split.
-///
-/// Depends on passes: 3 (infer_contained), 7 (carve_contained, second).
 #[test]
 fn polygonize_split_touching_hole_drop_minimal_matches_fixture() {
     assert_polygonize_fixture("split_touching_hole_drop_minimal");
@@ -947,9 +919,6 @@ fn polygonize_split_touching_hole_drop_minimal_matches_fixture() {
 
 /// Overlap ownership area priority: when multiple shells claim a polygon,
 /// the smallest enclosing shell wins.
-///
-/// Depends on passes: 1 (infer_parent_holes), 4 (remove_non_unique),
-/// 5 (carve_contained, first), 6 (merge_touching_holes).
 #[test]
 fn polygonize_ownership_area_priority_enclosing_shell_minimal_matches_fixture() {
     assert_polygonize_fixture("ownership_area_priority_enclosing_shell_minimal");
@@ -1013,12 +982,6 @@ fn polygonize_preserves_enclosed_taiwan_polygon_minimal_matches_fixture() {
         .collect();
     let noded_lines = nodify_lines(input_lines.into_iter(), 1e-6_f64);
     let polygons = polygonize(noded_lines.into_iter());
-
-    eprintln!(
-        "polygonize output for taiwan_bug_minimal ({} polygons):\n{}",
-        polygons.0.len(),
-        multipolygon_to_geojson_string(&polygons)
-    );
 
     let containing_polygons: Vec<usize> = polygons
         .0
